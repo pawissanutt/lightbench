@@ -445,7 +445,7 @@ impl StatsSnapshot {
     /// Convert to CSV row string.
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{:.2},{:.2},{},{},{},{},{},{},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.2},{:.2},{},{},{},{},{},{},{},{:.2},{:.2},{},{},{},{}",
             self.timestamp,
             self.sent_count,
             self.received_count,
@@ -462,21 +462,15 @@ impl StatsSnapshot {
             self.latency_ns_mean,
             self.latency_ns_stddev,
             self.latency_sample_count,
-            self.connections,
-            self.active_connections,
-            self.connection_attempts,
-            self.connection_failures,
-            self.crashes_injected,
-            self.reconnects,
-            self.reconnect_failures,
             self.duplicate_count,
-            self.gap_count
+            self.gap_count,
+            self.head_loss
         )
     }
 
     /// Get CSV header string.
     pub fn csv_header() -> &'static str {
-        "timestamp,sent_count,received_count,error_count,total_throughput,interval_throughput,latency_ns_p25,latency_ns_p50,latency_ns_p75,latency_ns_p95,latency_ns_p99,latency_ns_min,latency_ns_max,latency_ns_mean,latency_ns_stddev,latency_sample_count,connections,active_connections,connection_attempts,connection_failures,crashes_injected,reconnects,reconnect_failures,duplicate_count,gap_count"
+        "timestamp,sent_count,received_count,error_count,total_throughput,interval_throughput,latency_ns_p25,latency_ns_p50,latency_ns_p75,latency_ns_p95,latency_ns_p99,latency_ns_min,latency_ns_max,latency_ns_mean,latency_ns_stddev,latency_sample_count,duplicate_count,gap_count,head_loss"
     }
 }
 

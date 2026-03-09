@@ -96,8 +96,7 @@ All three patterns share common builder methods: `.workers(n)`, `.duration_secs(
 - All counter values
 - 5 latency percentiles (p25, p50, p75, p95, p99) plus min, max, mean, stddev
 - Throughput: `total_throughput()` from first-activity time; `interval_throughput()` from last snapshot
-- CSV serialization: 25-column format (see Output section)
-
+- CSV serialization: 19-column format — core counters, throughputs, 10 latency fields, 3 quality metrics 
 **SequenceTracker**: Per-consumer duplicate/gap detection
 - `HashSet`-based seen tracking
 - `record(seq)` → `bool` (true = new, false = duplicate)

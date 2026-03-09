@@ -344,16 +344,14 @@ writer.flush().await?;
 
 ## CSV Output Format
 
-Snapshots are written as 25-column CSV rows:
+Snapshots are written as 19-column CSV rows:
 
 ```
 timestamp,sent_count,received_count,error_count,total_throughput,interval_throughput,
 latency_ns_p25,latency_ns_p50,latency_ns_p75,latency_ns_p95,latency_ns_p99,
 latency_ns_min,latency_ns_max,latency_ns_mean,latency_ns_stddev,latency_sample_count,
-connections,active_connections,connection_attempts,connection_failures,
-crashes_injected,reconnects,reconnect_failures,duplicate_count,gap_count
+duplicate_count,gap_count,head_loss
 ```
 
-## License
-
-MIT OR Apache-2.0
+Quality columns (`duplicate_count`, `gap_count`, `head_loss`) are `0` unless a
+`SequenceTracker` is in use.
