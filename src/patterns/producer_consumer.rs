@@ -296,7 +296,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         }
 
         // ---- Snapshot task (runs from the start, including during ramp) -
-        let snapshot_handle = spawn_dual_snapshot_task(
+        let snapshot_handle = if show_progress || csv_path.is_some() { Some(spawn_dual_snapshot_task(
             producer_stats.clone(),
             consumer_stats.clone(),
             running.clone(),
@@ -321,7 +321,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
                     c.latency_ns_p99 as f64 / 1_000_000.0,
                 )
             },
-        );
+        )) } else { None };
 
         // ---- Ramp-up ----------------------------------------------------
         if let Some(ramp_dur) = self.ramp_up {
@@ -337,7 +337,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         for handle in handles {
             let _ = handle.await;
         }
-        let _ = snapshot_handle.await;
+        if let Some(h) = snapshot_handle { let _ = h.await; }
 
         let ps = producer_stats.snapshot().await;
         let cs = consumer_stats.snapshot().await;

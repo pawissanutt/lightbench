@@ -300,17 +300,20 @@ impl<W: BenchmarkWork> Benchmark<W> {
             })
             .collect();
 
-        // Snapshot task runs from the start (including ramp)
-        let snapshot_handle = spawn_snapshot_task(
-            stats.clone(),
-            running.clone(),
-            in_ramp.clone(),
-            self.show_ramp_progress,
-            self.snapshot_interval,
-            self.csv_path.clone(),
-            self.show_progress,
-            self.progress_fn,
-        );
+        let snapshot_handle = if self.show_progress {
+            // Snapshot task runs from the start (including ramp)
+            Some( spawn_snapshot_task(
+                stats.clone(),
+                running.clone(),
+                in_ramp.clone(),
+                self.show_ramp_progress,
+                self.snapshot_interval,
+                self.csv_path.clone(),
+                self.progress_fn,
+            ))
+        } else {
+            None
+        };
 
         // Ramp-up phase
         if let Some(ramp_dur) = self.ramp_up {
@@ -334,7 +337,9 @@ impl<W: BenchmarkWork> Benchmark<W> {
         for h in handles {
             let _ = h.await;
         }
-        let _ = snapshot_handle.await;
+        if let Some(s) = snapshot_handle{
+            let _ = s.await;
+        }
 
         let snap = stats.snapshot().await;
         let error_counts = errors.take().await;
@@ -454,7 +459,6 @@ fn spawn_snapshot_task(
     show_ramp_progress: bool,
     interval: Duration,
     csv_path: Option<PathBuf>,
-    show_progress: bool,
     progress_fn: ProgressFn,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -466,9 +470,6 @@ fn spawn_snapshot_task(
 
         if let Some(w) = csv_writer.as_mut() {
             writeln!(w, "{}", StatsSnapshot::csv_header()).ok();
-        }
-        if !show_progress {
-            println!("{}", StatsSnapshot::csv_header());
         }
 
         while running.load(Ordering::Relaxed) {
@@ -484,16 +485,12 @@ fn spawn_snapshot_task(
                 continue;
             }
 
-            if show_progress {
-                if let Some(line) = progress_fn(&snapshot) {
-                    if is_ramp {
-                        crate::tprintln!("[RAMP] {}", line);
-                    } else {
-                        crate::tprintln!("{}", line);
-                    }
+            if let Some(line) = progress_fn(&snapshot) {
+                if is_ramp {
+                    crate::tprintln!("[RAMP] {}", line);
+                } else {
+                    crate::tprintln!("{}", line);
                 }
-            } else {
-                println!("{}", snapshot.to_csv_row());
             }
         }
     })

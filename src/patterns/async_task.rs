@@ -289,7 +289,7 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         }
 
         // ---- Snapshot task (runs from the start, including during ramp) ---
-        let snapshot_handle = spawn_dual_snapshot_task(
+        let snapshot_handle = if show_progress || csv_path.is_some() { Some(spawn_dual_snapshot_task(
             submit_stats.clone(),
             complete_stats.clone(),
             running.clone(),
@@ -313,7 +313,7 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
                     c.latency_ns_p99 as f64 / 1_000_000.0,
                 )
             },
-        );
+        )) } else { None };
 
         // ---- Ramp-up ----------------------------------------------------
         if let Some(ramp_dur) = self.ramp_up {
@@ -329,7 +329,7 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         for handle in handles {
             let _ = handle.await;
         }
-        let _ = snapshot_handle.await;
+        if let Some(h) = snapshot_handle { let _ = h.await; }
 
         let ss = submit_stats.snapshot().await;
         let cs = complete_stats.snapshot().await;

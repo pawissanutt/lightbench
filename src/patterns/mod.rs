@@ -59,9 +59,6 @@ pub(crate) fn spawn_dual_snapshot_task(
         if let Some(w) = csv_writer.as_mut() {
             writeln!(w, "{}", header).ok();
         }
-        if !show_progress {
-            println!("{}", header);
-        }
 
         while running.load(Ordering::Relaxed) {
             ticker.tick().await;
@@ -74,20 +71,16 @@ pub(crate) fn spawn_dual_snapshot_task(
                 writeln!(w, "{}", row).ok();
             }
 
-            if is_ramp && !show_ramp_progress {
+            if !show_progress || (is_ramp && !show_ramp_progress) {
                 continue;
             }
 
-            if show_progress {
-                if let Some(line) = progress_fn(&p, &c) {
-                    if is_ramp {
-                        crate::tprintln!("[RAMP] {}", line);
-                    } else {
-                        crate::tprintln!("{}", line);
-                    }
+            if let Some(line) = progress_fn(&p, &c) {
+                if is_ramp {
+                    crate::tprintln!("[RAMP] {}", line);
+                } else {
+                    crate::tprintln!("{}", line);
                 }
-            } else {
-                println!("{}", row);
             }
         }
     })
