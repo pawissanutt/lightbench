@@ -11,6 +11,7 @@
 //! ```
 
 use lightbench::{logging, Benchmark, BenchmarkWork, WorkResult};
+use std::time::Duration;
 
 #[derive(Clone)]
 struct Noop;
@@ -32,13 +33,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bench = Benchmark::new()
         .workers(args.workers)
         .duration_secs(args.duration)
-        .progress(args.progress);
+        .burst_factor(args.burst_factor)
+        .progress(args.progress)
+        .show_ramp_progress(args.show_ramp_progress);
 
     bench = match (args.rate, args.rate_per_worker) {
         (Some(r), _) => bench.rate(r),
         (_, Some(r)) => bench.rate_per_worker(r),
         _ => bench, // unlimited
     };
+
+    if let Some(secs) = args.ramp_up {
+        bench = bench.ramp_up(Duration::from_secs(secs));
+        bench = bench.ramp_start_rate(args.ramp_start_rate);
+    }
 
     if let Some(csv) = args.csv {
         bench = bench.csv(csv);
@@ -55,8 +63,12 @@ struct Args {
     rate_per_worker: Option<f64>,
     duration: u64,
     workers: usize,
+    ramp_up: Option<u64>,
+    ramp_start_rate: f64,
+    burst_factor: f64,
     csv: Option<String>,
     progress: bool,
+    show_ramp_progress: bool,
 }
 
 fn parse_args() -> Args {
@@ -65,8 +77,12 @@ fn parse_args() -> Args {
         rate_per_worker: None,
         duration: 5,
         workers: 4,
+        ramp_up: None,
+        ramp_start_rate: 0.0,
+        burst_factor: 0.1,
         csv: None,
         progress: true,
+        show_ramp_progress: true,
     };
     let mut iter = std::env::args().skip(1);
 
@@ -90,6 +106,22 @@ fn parse_args() -> Args {
             }
             "--csv" => args.csv = iter.next(),
             "--no-progress" => args.progress = false,
+            "--hide-ramp-progress" => args.show_ramp_progress = false,
+            "--ramp-up" | "-u" => {
+                args.ramp_up = iter.next().and_then(|v| v.parse().ok())
+            }
+            "--ramp-start" => {
+                args.ramp_start_rate = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.ramp_start_rate)
+            }
+            "--burst-factor" => {
+                args.burst_factor = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.burst_factor)
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: noop [OPTIONS]\n\
@@ -98,8 +130,12 @@ fn parse_args() -> Args {
                        -R, --rate-per-worker <N> Requests/sec per worker (independent limiters)\n  \
                        -d, --duration <S>        Duration in seconds (default: 5)\n  \
                        -w, --workers <N>         Worker count (default: 4)\n  \
+                       -u, --ramp-up <S>         Ramp-up duration in seconds (pre-measurement)\n  \
+                           --ramp-start <N>      Initial rate at start of ramp (default: 0)\n  \
+                           --burst-factor <F>    Burst allowance in seconds of tokens (default: 0.1)\n  \
                        --csv <FILE>              Write snapshots to CSV file\n  \
-                       --no-progress             Disable progress display (output CSV to stdout)"
+                       --no-progress             Disable progress display (output CSV to stdout)\n  \
+                       --hide-ramp-progress      Hide progress output during ramp-up period"
                 );
                 std::process::exit(0);
             }

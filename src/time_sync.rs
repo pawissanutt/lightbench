@@ -1,7 +1,10 @@
 //! Fast time synchronization utilities.
 //!
-//! Provides efficient UNIX nanosecond timestamps using a cached base
-//! and monotonic clock, avoiding repeated syscalls on hot paths.
+//! Provides efficient UNIX nanosecond timestamp estimates using a cached
+//! wall-clock base plus a monotonic clock delta.
+//!
+//! Tradeoff: after initialization, the estimate does not track later
+//! wall-clock adjustments such as NTP corrections or manual clock changes.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -27,15 +30,24 @@ fn base() -> &'static Base {
 
 /// Fast estimate of current UNIX time in nanoseconds.
 ///
-/// Uses a cached base timestamp and monotonic clock delta to avoid
-/// repeated `SystemTime::now()` syscalls. Suitable for
-/// latency measurement where absolute accuracy is less important
-/// than low overhead.
+/// Uses a cached `SystemTime` base timestamp and a fresh monotonic clock
+/// delta on each call. This avoids repeated wall-clock to UNIX-epoch
+/// conversions on hot paths while still requiring a monotonic clock read.
+/// Suitable for latency measurement where low overhead matters more than
+/// exact wall-clock accuracy.
 ///
 /// # Performance
 ///
-/// Much faster than `SystemTime::now()` on hot paths because it only
-/// reads the monotonic clock after initialization.
+/// Typically somewhat faster than calling `SystemTime::now()` and converting
+/// it to UNIX nanoseconds on every sample, because only the monotonic clock
+/// is read after initialization.
+///
+/// # Tradeoffs
+///
+/// The returned timestamp is an estimate anchored to the wall clock at
+/// initialization time. It will not reflect later wall-clock adjustments,
+/// so it is best suited for short-lived latency measurements inside a single
+/// process.
 ///
 /// # Example
 ///
@@ -52,7 +64,7 @@ pub fn now_unix_ns_estimate() -> u64 {
     let b = base();
     let delta = b.instant.elapsed().as_nanos();
     let ns = b.unix_ns.saturating_add(delta);
-    // Clamp to u64 (overflows far in the future)
+    // Truncates on overflow, which would only occur far in the future.
     ns as u64
 }
 

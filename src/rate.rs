@@ -7,7 +7,9 @@
 //! - [`RateController`]: Per-worker rate limiter (each worker gets its own)
 //! - [`SharedRateController`]: Shared across workers (global rate limit)
 
+use crate::time_sync::now_unix_ns_estimate;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{interval, Interval, MissedTickBehavior};
 
@@ -171,10 +173,7 @@ impl SharedRateController {
         let tokens_per_ns = rate / 1_000_000_000.0;
         // Allow burst of up to 100ms worth of tokens
         let max_tokens = ((rate * 0.1).max(1.0) * TOKEN_SCALE as f64) as u64;
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+        let now_ns = now_ns();
 
         Self {
             rate_per_sec: rate,
@@ -240,10 +239,7 @@ impl SharedRateController {
     /// Refill tokens based on elapsed time.
     #[inline]
     fn refill(&self) {
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+        let now_ns = now_ns();
 
         let last = self.last_refill_ns.load(Ordering::Relaxed);
         let elapsed_ns = now_ns.saturating_sub(last);
@@ -277,6 +273,236 @@ impl SharedRateController {
     /// Get configured rate (messages per second).
     pub fn rate(&self) -> f64 {
         self.rate_per_sec
+    }
+}
+
+// ── DynamicRateController ────────────────────────────────────────────────────
+
+/// Inner state for [`DynamicRateController`], behind an `Arc`.
+///
+/// All fields are atomic so that `set_rate` / `set_burst_factor` from any
+/// clone are immediately visible to all other clones sharing the same pool.
+struct DynInner {
+    /// Current rate in messages per second (f64 bit-cast).
+    rate_per_sec: AtomicU64,
+    /// Tokens added per nanosecond, scaled (f64 bit-cast).
+    tokens_per_ns: AtomicU64,
+    /// Burst factor stored so `set_rate` can recalculate `max_tokens` (f64 bit-cast).
+    burst_factor: AtomicU64,
+    /// Maximum token accumulation (scaled by TOKEN_SCALE).
+    max_tokens: AtomicU64,
+    /// Available tokens (scaled by TOKEN_SCALE).
+    tokens: AtomicU64,
+    /// Timestamp of last refill in nanoseconds.
+    last_refill_ns: AtomicU64,
+}
+
+impl DynInner {
+    fn new(rate: f64, burst_factor: f64) -> Self {
+        let rate = rate.max(0.0);
+        let burst_factor = burst_factor.clamp(0.001, 1000.0);
+        let tokens_per_ns = rate / 1_000_000_000.0;
+        let max_tokens = Self::calc_max_tokens(rate, burst_factor);
+        let now_ns = now_ns();
+        Self {
+            rate_per_sec: AtomicU64::new(rate.to_bits()),
+            tokens_per_ns: AtomicU64::new(tokens_per_ns.to_bits()),
+            burst_factor: AtomicU64::new(burst_factor.to_bits()),
+            max_tokens: AtomicU64::new(max_tokens),
+            tokens: AtomicU64::new(TOKEN_SCALE), // start with 1 token
+            last_refill_ns: AtomicU64::new(now_ns),
+        }
+    }
+
+    #[inline]
+    fn calc_max_tokens(rate: f64, burst_factor: f64) -> u64 {
+        ((rate * burst_factor).max(1.0) * TOKEN_SCALE as f64) as u64
+    }
+
+    #[inline]
+    fn rate(&self) -> f64 {
+        f64::from_bits(self.rate_per_sec.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    fn tokens_per_ns(&self) -> f64 {
+        f64::from_bits(self.tokens_per_ns.load(Ordering::Relaxed))
+    }
+
+    fn set_rate(&self, rate: f64) {
+        let rate = rate.max(0.0);
+        let burst_factor = f64::from_bits(self.burst_factor.load(Ordering::Relaxed));
+        let tokens_per_ns = rate / 1_000_000_000.0;
+        let max_tokens = Self::calc_max_tokens(rate, burst_factor);
+        self.rate_per_sec.store(rate.to_bits(), Ordering::Relaxed);
+        self.tokens_per_ns
+            .store(tokens_per_ns.to_bits(), Ordering::Relaxed);
+        self.max_tokens.store(max_tokens, Ordering::Relaxed);
+    }
+
+    fn set_burst_factor(&self, factor: f64) {
+        let factor = factor.clamp(0.001, 1000.0);
+        let rate = self.rate();
+        let max_tokens = Self::calc_max_tokens(rate, factor);
+        self.burst_factor
+            .store(factor.to_bits(), Ordering::Relaxed);
+        self.max_tokens.store(max_tokens, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn refill(&self) {
+        let now = now_ns();
+        let last = self.last_refill_ns.load(Ordering::Relaxed);
+        let elapsed_ns = now.saturating_sub(last);
+        if elapsed_ns == 0 {
+            return;
+        }
+        let new_tokens =
+            (elapsed_ns as f64 * self.tokens_per_ns() * TOKEN_SCALE as f64) as u64;
+        if new_tokens == 0 {
+            return;
+        }
+        let _ = self.last_refill_ns.compare_exchange(
+            last,
+            now,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        let max = self.max_tokens.load(Ordering::Relaxed);
+        let _ = self
+            .tokens
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                Some(cur.saturating_add(new_tokens).min(max))
+            });
+    }
+}
+
+#[inline]
+fn now_ns() -> u64 {
+    now_unix_ns_estimate()
+}
+
+/// Shareable, dynamically-adjustable rate controller.
+///
+/// `DynamicRateController` wraps an `Arc`-backed token bucket, so **cloning it
+/// shares the same token pool** across all workers — no extra `Arc::new()`
+/// at the call site.  The rate and burst factor can be changed at any time
+/// with [`set_rate`](Self::set_rate) / [`set_burst_factor`](Self::set_burst_factor);
+/// all clones pick up the new values on their next [`acquire`](Self::acquire).
+///
+/// This makes it the natural building block for ramp-up: a driver task calls
+/// `set_rate()` periodically while worker tasks hold their own `.clone()` of
+/// the same controller.
+///
+/// # Example
+///
+/// ```
+/// use lightbench::rate::DynamicRateController;
+///
+/// # tokio_test::block_on(async {
+/// let ctrl = DynamicRateController::new(100.0);   // 100 msg/s
+/// let worker_ctrl = ctrl.clone();                 // shares the same pool
+///
+/// // Ramp from 100 → 500 externally:
+/// ctrl.set_rate(500.0);
+///
+/// worker_ctrl.acquire().await; // picks up the new rate immediately
+/// # });
+/// ```
+#[derive(Clone)]
+pub struct DynamicRateController {
+    inner: Arc<DynInner>,
+}
+
+impl DynamicRateController {
+    /// Create a new controller at `rate` msg/s with the default burst factor (0.1 = 100 ms).
+    ///
+    /// Use `rate <= 0` for unlimited (every [`acquire`](Self::acquire) returns immediately).
+    pub fn new(rate: f64) -> Self {
+        Self {
+            inner: Arc::new(DynInner::new(rate, 0.1)),
+        }
+    }
+
+    /// Create a new controller with an explicit burst factor.
+    ///
+    /// `burst_factor` controls how many seconds' worth of tokens can accumulate
+    /// while the system is idle.  For example `0.5` allows up to 500 ms of
+    /// burst before the bucket is full.
+    pub fn with_burst(rate: f64, burst_factor: f64) -> Self {
+        Self {
+            inner: Arc::new(DynInner::new(rate, burst_factor)),
+        }
+    }
+
+    /// Update the target rate (msg/s).
+    ///
+    /// Thread-safe; all clones sharing this controller see the change on their
+    /// next [`acquire`](Self::acquire).  Setting `rate <= 0` switches to unlimited.
+    pub fn set_rate(&self, rate: f64) {
+        self.inner.set_rate(rate);
+    }
+
+    /// Update the burst factor.
+    ///
+    /// Thread-safe; recalculates the maximum token accumulation immediately.
+    pub fn set_burst_factor(&self, factor: f64) {
+        self.inner.set_burst_factor(factor);
+    }
+
+    /// Return the currently configured rate (msg/s).
+    pub fn rate(&self) -> f64 {
+        self.inner.rate()
+    }
+
+    /// Returns `true` if the controller is in unlimited mode (`rate <= 0`).
+    #[inline]
+    pub fn is_unlimited(&self) -> bool {
+        self.inner.rate() <= 0.0
+    }
+
+    /// Acquire permission to send one message.
+    ///
+    /// Returns immediately when rate ≤ 0 (unlimited).  Otherwise blocks until
+    /// a token is available using an adaptive-sleep CAS loop.
+    #[inline]
+    pub async fn acquire(&self) {
+        if self.is_unlimited() {
+            return;
+        }
+
+        loop {
+            self.inner.refill();
+
+            let current = self.inner.tokens.load(Ordering::Relaxed);
+            if current >= TOKEN_SCALE {
+                if self
+                    .inner
+                    .tokens
+                    .compare_exchange_weak(
+                        current,
+                        current - TOKEN_SCALE,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    return;
+                }
+                continue; // CAS lost, retry without sleeping
+            }
+
+            // Adaptive sleep: shorter at high rates
+            let rate = self.inner.rate();
+            let sleep_us = if rate > 10_000.0 {
+                10
+            } else if rate > 1_000.0 {
+                100
+            } else {
+                1_000
+            };
+            tokio::time::sleep(Duration::from_micros(sleep_us)).await;
+        }
     }
 }
 

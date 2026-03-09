@@ -71,7 +71,7 @@ pub use patterns::work::{
     AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerWork, PollResult,
     PollWork, ProducerConsumerResults, ProducerWork, SubmitWork, WorkResult,
 };
-pub use rate::{RateController, SharedRateController};
+pub use rate::{DynamicRateController, RateController, SharedRateController};
 pub use time_sync::{latency_ns, now_unix_ns_estimate};
 
 /// Like `println!` but prefixes every line with the elapsed time since the

@@ -55,18 +55,19 @@
 
 use crate::metrics::errors::ErrorCounter;
 use crate::metrics::StatsSnapshot;
+use crate::patterns::request::ramp_drive;
 use crate::patterns::work::{
     BenchmarkSummary, ConsumerWork, ProducerConsumerResults, ProducerWork,
 };
-use crate::rate::RateController;
+use crate::patterns::{spawn_dual_snapshot_task, DualProgressFn};
+use crate::rate::DynamicRateController;
 use crate::Stats;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-type ProgressFn = Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>;
+type ProgressFn = DualProgressFn;
 
 /// Builder for producer/consumer benchmarks.
 ///
@@ -79,6 +80,10 @@ pub struct ProducerConsumerBenchmark<PR = (), CO = ()> {
     producers: usize,
     consumers: usize,
     rate: f64,
+    ramp_up: Option<Duration>,
+    ramp_start_rate: f64,
+    burst_factor: f64,
+    show_ramp_progress: bool,
     duration: Duration,
     csv_path: Option<PathBuf>,
     show_progress: bool,
@@ -102,10 +107,14 @@ impl ProducerConsumerBenchmark<(), ()> {
             producers: 1,
             consumers: 1,
             rate: 1000.0,
+            ramp_up: None,
+            ramp_start_rate: 0.0,
+            burst_factor: 0.1,
+            show_ramp_progress: true,
             duration: Duration::from_secs(10),
             csv_path: None,
             show_progress: true,
-            progress_fn: Box::new(|p, c| {
+            progress_fn: Arc::new(|p, c| {
                 let in_flight = p.sent_count.saturating_sub(c.received_count);
                 Some(format!(
                     "  {} produced | {} consumed | {} in-flight | p50={:.2}ms",
@@ -140,6 +149,30 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
         self
     }
 
+    /// Set the ramp-up duration before the measured benchmark starts.
+    pub fn ramp_up(mut self, duration: Duration) -> Self {
+        self.ramp_up = Some(duration);
+        self
+    }
+
+    /// Set the initial rate at the start of the ramp-up period (default: `0.0`).
+    pub fn ramp_start_rate(mut self, rate: f64) -> Self {
+        self.ramp_start_rate = rate.max(0.0);
+        self
+    }
+
+    /// Set the burst factor for the rate controller (default: `0.1`).
+    pub fn burst_factor(mut self, factor: f64) -> Self {
+        self.burst_factor = factor.clamp(0.001, 1000.0);
+        self
+    }
+
+    /// Show progress during the ramp-up period (default: `true`).
+    pub fn show_ramp_progress(mut self, show: bool) -> Self {
+        self.show_ramp_progress = show;
+        self
+    }
+
     /// Set benchmark duration.
     pub fn duration(mut self, duration: Duration) -> Self {
         self.duration = duration;
@@ -166,31 +199,25 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
 
     /// Set a custom progress formatter.
     ///
-    /// The closure receives the producer [`StatsSnapshot`] and the consumer
-    /// [`StatsSnapshot`], and returns the message to print (without timestamp
-    /// — the `[N.NNNs]` prefix is always prepended). Return `None` to
-    /// suppress the line for that interval.
-    ///
-    /// Overrides the default `"N produced | N consumed | N in-flight | p50=…ms"` format.
-    /// Has no effect when [`progress`](Self::progress) is set to `false`.
+    /// The closure receives the producer and consumer [`StatsSnapshot`]s.
     pub fn on_progress<F>(mut self, f: F) -> Self
     where
-        F: Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static,
+        F: Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + Sync + 'static,
     {
-        self.progress_fn = Box::new(f);
+        self.progress_fn = Arc::new(f);
         self
     }
 
     /// Set the producer implementation.
-    ///
-    /// The framework clones `producer` once per producer worker. Put shared
-    /// resources (queues, channels) in the struct; per-worker resources go
-    /// in [`ProducerWork::State`] via [`ProducerWork::init`].
     pub fn producer<PR2: ProducerWork>(self, p: PR2) -> ProducerConsumerBenchmark<PR2, CO> {
         ProducerConsumerBenchmark {
             producers: self.producers,
             consumers: self.consumers,
             rate: self.rate,
+            ramp_up: self.ramp_up,
+            ramp_start_rate: self.ramp_start_rate,
+            burst_factor: self.burst_factor,
+            show_ramp_progress: self.show_ramp_progress,
             duration: self.duration,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
@@ -201,13 +228,15 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
     }
 
     /// Set the consumer implementation.
-    ///
-    /// The framework clones `consumer` once per consumer worker.
     pub fn consumer<CO2: ConsumerWork>(self, c: CO2) -> ProducerConsumerBenchmark<PR, CO2> {
         ProducerConsumerBenchmark {
             producers: self.producers,
             consumers: self.consumers,
             rate: self.rate,
+            ramp_up: self.ramp_up,
+            ramp_start_rate: self.ramp_start_rate,
+            burst_factor: self.burst_factor,
+            show_ramp_progress: self.show_ramp_progress,
             duration: self.duration,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
@@ -228,6 +257,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let consumer_stats = Arc::new(Stats::new());
         let errors = ErrorCounter::new();
         let running = Arc::new(AtomicBool::new(true));
+        let in_ramp = Arc::new(AtomicBool::new(self.ramp_up.is_some()));
 
         tracing::info!(
             "ProducerConsumer: {} producers @ {:.0} msg/s, {} consumers, {}s",
@@ -237,86 +267,48 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
             self.duration.as_secs()
         );
 
+        let show_progress = self.show_progress;
+        let csv_path = self.csv_path.clone();
+        let progress_fn = self.progress_fn;
         let mut handles = Vec::new();
 
         // ---- Producers --------------------------------------------------
-        let rate_per_producer = self.rate / self.producers as f64;
+        let start_rate = if self.ramp_up.is_some() { self.ramp_start_rate } else { self.rate };
+        let rate_ctrl = DynamicRateController::with_burst(start_rate, self.burst_factor);
+
         for _ in 0..self.producers {
-            let p = producer.clone();
-            let stats = producer_stats.clone();
-            let running = running.clone();
-            let errors = errors.clone();
-            handles.push(tokio::spawn(async move {
-                let mut state = p.init().await;
-                let mut rate_ctrl = RateController::new(rate_per_producer);
-                while running.load(Ordering::Relaxed) {
-                    rate_ctrl.wait_for_next().await;
-                    match p.produce(&mut state).await {
-                        Ok(()) => {
-                            stats.record_sent().await;
-                        }
-                        Err(reason) => {
-                            tracing::debug!(reason, "produce error");
-                            errors.record(&reason).await;
-                            stats.record_error().await;
-                        }
-                    }
-                }
-                p.cleanup(state).await;
-            }));
+            handles.push(spawn_producer(
+                producer.clone(),
+                rate_ctrl.clone(),
+                producer_stats.clone(),
+                errors.clone(),
+                running.clone(),
+            ));
         }
 
         // ---- Consumers --------------------------------------------------
         for _ in 0..self.consumers {
-            let c = consumer.clone();
-            let stats = consumer_stats.clone();
-            let running = running.clone();
-            handles.push(tokio::spawn(async move {
-                let mut state = c.init().await;
-                while running.load(Ordering::Relaxed) {
-                    match c.consume(&mut state).await {
-                        Some(latency_ns) => {
-                            stats.record_received(latency_ns).await;
-                        }
-                        None => {
-                            tokio::task::yield_now().await;
-                        }
-                    }
-                }
-                c.cleanup(state).await;
-            }));
+            handles.push(spawn_consumer(
+                consumer.clone(),
+                consumer_stats.clone(),
+                running.clone(),
+            ));
         }
 
-        // ---- Snapshot task ----------------------------------------------
-        let ps = producer_stats.clone();
-        let cs = consumer_stats.clone();
-        let snap_running = running.clone();
-        let csv_path = self.csv_path.clone();
-        let show_progress = self.show_progress;
-        let progress_fn = self.progress_fn;
-        let snapshot_handle = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(1));
-            let mut csv_writer = csv_path.as_ref().map(|p| {
-                let f = std::fs::File::create(p).expect("Failed to create CSV file");
-                std::io::BufWriter::new(f)
-            });
-
-            let header =
-                "timestamp,produced,consumed,in_flight,produce_rate,consume_rate,p50_ms,p95_ms,p99_ms";
-            if let Some(w) = csv_writer.as_mut() {
-                writeln!(w, "{}", header).ok();
-            }
-            if !show_progress {
-                println!("{}", header);
-            }
-
-            while snap_running.load(Ordering::Relaxed) {
-                ticker.tick().await;
-                let p = ps.snapshot().await;
-                let c = cs.snapshot().await;
+        // ---- Snapshot task (runs from the start, including during ramp) -
+        let snapshot_handle = spawn_dual_snapshot_task(
+            producer_stats.clone(),
+            consumer_stats.clone(),
+            running.clone(),
+            in_ramp.clone(),
+            self.show_ramp_progress,
+            csv_path,
+            show_progress,
+            progress_fn,
+            "timestamp,produced,consumed,in_flight,produce_rate,consume_rate,p50_ms,p95_ms,p99_ms",
+            |p, c| {
                 let in_flight = p.sent_count.saturating_sub(c.received_count);
-
-                let row = format!(
+                format!(
                     "{},{},{},{},{:.2},{:.2},{:.3},{:.3},{:.3}",
                     p.timestamp,
                     p.sent_count,
@@ -327,21 +319,16 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
                     c.latency_ns_p50 as f64 / 1_000_000.0,
                     c.latency_ns_p95 as f64 / 1_000_000.0,
                     c.latency_ns_p99 as f64 / 1_000_000.0,
-                );
+                )
+            },
+        );
 
-                if let Some(w) = csv_writer.as_mut() {
-                    writeln!(w, "{}", row).ok();
-                }
-
-                if show_progress {
-                    if let Some(line) = progress_fn(&p, &c) {
-                        crate::tprintln!("{}", line);
-                    }
-                } else {
-                    println!("{}", row);
-                }
-            }
-        });
+        // ---- Ramp-up ----------------------------------------------------
+        if let Some(ramp_dur) = self.ramp_up {
+            ramp_drive(rate_ctrl, self.ramp_start_rate, self.rate, ramp_dur).await;
+            tracing::info!("Ramp-up complete, starting measurement");
+            in_ramp.store(false, Ordering::SeqCst);
+        }
 
         // ---- Wait and collect -------------------------------------------
         tokio::time::sleep(self.duration).await;
@@ -355,47 +342,10 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let ps = producer_stats.snapshot().await;
         let cs = consumer_stats.snapshot().await;
         let error_counts = errors.take().await;
-        let ns = |v: u64| v as f64 / 1_000_000.0;
-
-        let produced = BenchmarkSummary {
-            total_ops: ps.sent_count,
-            successes: ps.sent_count,
-            errors: ps.error_count,
-            throughput: ps.total_throughput(),
-            latency_p25_ms: 0.0,
-            latency_p50_ms: 0.0,
-            latency_p75_ms: 0.0,
-            latency_p95_ms: 0.0,
-            latency_p99_ms: 0.0,
-            latency_min_ms: 0.0,
-            latency_max_ms: 0.0,
-            latency_mean_ms: 0.0,
-            latency_stddev_ms: 0.0,
-            latency_samples: 0,
-            error_breakdown: error_counts,
-        };
-
-        let consumed = BenchmarkSummary {
-            total_ops: cs.received_count,
-            successes: cs.received_count,
-            errors: cs.error_count,
-            throughput: cs.total_throughput(),
-            latency_p25_ms: ns(cs.latency_ns_p25),
-            latency_p50_ms: ns(cs.latency_ns_p50),
-            latency_p75_ms: ns(cs.latency_ns_p75),
-            latency_p95_ms: ns(cs.latency_ns_p95),
-            latency_p99_ms: ns(cs.latency_ns_p99),
-            latency_min_ms: ns(cs.latency_ns_min),
-            latency_max_ms: ns(cs.latency_ns_max),
-            latency_mean_ms: cs.latency_ns_mean / 1_000_000.0,
-            latency_stddev_ms: cs.latency_ns_stddev / 1_000_000.0,
-            latency_samples: cs.latency_sample_count,
-            error_breakdown: Default::default(),
-        };
 
         ProducerConsumerResults {
-            produced,
-            consumed,
+            produced: BenchmarkSummary::from_snapshot_send_only(&ps, error_counts),
+            consumed: BenchmarkSummary::from_snapshot_recv_only(&cs),
             producers: self.producers,
             consumers: self.consumers,
             target_rate: self.rate,
@@ -403,4 +353,53 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
             csv_path: self.csv_path,
         }
     }
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────────────
+
+fn spawn_producer<PR: ProducerWork>(
+    producer: PR,
+    rate_ctrl: DynamicRateController,
+    stats: Arc<Stats>,
+    errors: ErrorCounter,
+    running: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut state = producer.init().await;
+        while running.load(Ordering::Relaxed) {
+            rate_ctrl.acquire().await;
+            match producer.produce(&mut state).await {
+                Ok(()) => {
+                    stats.record_sent().await;
+                }
+                Err(reason) => {
+                    tracing::debug!(reason, "produce error");
+                    errors.record(&reason).await;
+                    stats.record_error().await;
+                }
+            }
+        }
+        producer.cleanup(state).await;
+    })
+}
+
+fn spawn_consumer<CO: ConsumerWork>(
+    consumer: CO,
+    stats: Arc<Stats>,
+    running: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut state = consumer.init().await;
+        while running.load(Ordering::Relaxed) {
+            match consumer.consume(&mut state).await {
+                Some(latency_ns) => {
+                    stats.record_received(latency_ns).await;
+                }
+                None => {
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+        consumer.cleanup(state).await;
+    })
 }

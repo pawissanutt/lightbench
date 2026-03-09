@@ -172,7 +172,7 @@ Options: `--rate <N>`, `--rate-per-worker <N>`, `--workers <N>`, `--duration <S>
 ### HTTP GET Benchmark
 
 ```bash
-cargo run --release --example http_get_benchmark -- --rate 1000 --duration 10 --workers 4
+cargo run --release --example http_get -- --rate 1000 --duration 10 --workers 4
 ```
 
 Options:

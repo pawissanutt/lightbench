@@ -5,7 +5,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example http_get_benchmark -- --rate 1000 --duration 10 --workers 4
+//! cargo run --example http_get -- --rate 1000 --duration 10 --workers 4
 //! ```
 
 use lightbench::{logging, now_unix_ns_estimate, Benchmark, BenchmarkWork, WorkResult};
@@ -175,7 +175,7 @@ fn parse_args() -> Args {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: http_get_benchmark [OPTIONS]\n\
+                    "Usage: http_get [OPTIONS]\n\
                      Options:\n  \
                        -r, --rate <N>            Total requests/sec (shared pool, <=0 for unlimited)\n  \
                        -R, --rate-per-worker <N> Requests/sec per worker (independent limiters)\n  \

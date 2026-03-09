@@ -10,6 +10,7 @@
 //! [`cleanup`]: BenchmarkWork::cleanup
 
 use crate::metrics::errors::ErrorCounter;
+use crate::metrics::StatsSnapshot;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
@@ -251,6 +252,79 @@ pub struct BenchmarkSummary {
 }
 
 impl BenchmarkSummary {
+    /// Build a summary from a snapshot that has latency data (receivers / request-response).
+    pub(crate) fn from_snapshot(
+        snap: &StatsSnapshot,
+        error_breakdown: HashMap<String, u64>,
+    ) -> Self {
+        let ns = |v: u64| v as f64 / 1_000_000.0;
+        Self {
+            total_ops: snap.sent_count,
+            successes: snap.received_count,
+            errors: snap.error_count,
+            throughput: snap.total_throughput(),
+            latency_p25_ms: ns(snap.latency_ns_p25),
+            latency_p50_ms: ns(snap.latency_ns_p50),
+            latency_p75_ms: ns(snap.latency_ns_p75),
+            latency_p95_ms: ns(snap.latency_ns_p95),
+            latency_p99_ms: ns(snap.latency_ns_p99),
+            latency_min_ms: ns(snap.latency_ns_min),
+            latency_max_ms: ns(snap.latency_ns_max),
+            latency_mean_ms: snap.latency_ns_mean / 1_000_000.0,
+            latency_stddev_ms: snap.latency_ns_stddev / 1_000_000.0,
+            latency_samples: snap.latency_sample_count,
+            error_breakdown,
+        }
+    }
+
+    /// Build a summary from a snapshot that only tracks send/error counts (producers, submitters).
+    pub(crate) fn from_snapshot_send_only(
+        snap: &StatsSnapshot,
+        error_breakdown: HashMap<String, u64>,
+    ) -> Self {
+        Self {
+            total_ops: snap.sent_count,
+            successes: snap.sent_count.saturating_sub(snap.error_count),
+            errors: snap.error_count,
+            throughput: snap.total_throughput(),
+            latency_p25_ms: 0.0,
+            latency_p50_ms: 0.0,
+            latency_p75_ms: 0.0,
+            latency_p95_ms: 0.0,
+            latency_p99_ms: 0.0,
+            latency_min_ms: 0.0,
+            latency_max_ms: 0.0,
+            latency_mean_ms: 0.0,
+            latency_stddev_ms: 0.0,
+            latency_samples: 0,
+            error_breakdown,
+        }
+    }
+
+    /// Build a summary from a receive-only snapshot (consumers, completions).
+    pub(crate) fn from_snapshot_recv_only(
+        snap: &StatsSnapshot,
+    ) -> Self {
+        let ns = |v: u64| v as f64 / 1_000_000.0;
+        Self {
+            total_ops: snap.received_count,
+            successes: snap.received_count,
+            errors: snap.error_count,
+            throughput: snap.total_throughput(),
+            latency_p25_ms: ns(snap.latency_ns_p25),
+            latency_p50_ms: ns(snap.latency_ns_p50),
+            latency_p75_ms: ns(snap.latency_ns_p75),
+            latency_p95_ms: ns(snap.latency_ns_p95),
+            latency_p99_ms: ns(snap.latency_ns_p99),
+            latency_min_ms: ns(snap.latency_ns_min),
+            latency_max_ms: ns(snap.latency_ns_max),
+            latency_mean_ms: snap.latency_ns_mean / 1_000_000.0,
+            latency_stddev_ms: snap.latency_ns_stddev / 1_000_000.0,
+            latency_samples: snap.latency_sample_count,
+            error_breakdown: Default::default(),
+        }
+    }
+
     /// Print a labelled block for this summary.
     pub fn print(&self, label: &str) {
         let success_rate = if self.total_ops > 0 {
