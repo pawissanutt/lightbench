@@ -48,7 +48,7 @@ impl RateController {
     /// to amortize timer cost at high rates.
     pub fn new(msgs_per_second: f64) -> Self {
         // Adaptive tick: aim for ≤100 ticks per second; not less than 10ms
-        let ticks_per_sec = msgs_per_second.max(1.0).min(100.0);
+        let ticks_per_sec = msgs_per_second.clamp(1.0, 100.0);
         let tick = Duration::from_secs_f64(1.0 / ticks_per_sec);
         let mut ticker = interval(tick);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Burst);
@@ -267,9 +267,11 @@ impl SharedRateController {
         );
 
         // Add tokens (capped at max)
-        let _ = self.tokens.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(current.saturating_add(new_tokens).min(self.max_tokens))
-        });
+        let _ = self
+            .tokens
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(new_tokens).min(self.max_tokens))
+            });
     }
 
     /// Get configured rate (messages per second).

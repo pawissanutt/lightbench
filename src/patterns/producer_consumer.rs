@@ -54,7 +54,9 @@
 //! ```
 
 use crate::metrics::errors::ErrorCounter;
-use crate::patterns::work::{BenchmarkSummary, ConsumerWork, ProducerConsumerResults, ProducerWork};
+use crate::patterns::work::{
+    BenchmarkSummary, ConsumerWork, ProducerConsumerResults, ProducerWork,
+};
 use crate::rate::RateController;
 use crate::Stats;
 use std::io::Write;

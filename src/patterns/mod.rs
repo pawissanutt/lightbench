@@ -15,6 +15,6 @@ pub use async_task::AsyncTaskBenchmark;
 pub use producer_consumer::ProducerConsumerBenchmark;
 pub use request::Benchmark;
 pub use work::{
-    AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerWork,
-    PollResult, PollWork, ProducerConsumerResults, ProducerWork, SubmitWork, WorkResult,
+    AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerWork, PollResult,
+    PollWork, ProducerConsumerResults, ProducerWork, SubmitWork, WorkResult,
 };

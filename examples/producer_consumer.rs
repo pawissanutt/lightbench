@@ -13,7 +13,9 @@
 //!     --producers 4 --consumers 4 --rate 10000 --duration 10
 //! ```
 
-use lightbench::{logging, now_unix_ns_estimate, ConsumerWork, ProducerConsumerBenchmark, ProducerWork};
+use lightbench::{
+    logging, now_unix_ns_estimate, ConsumerWork, ProducerConsumerBenchmark, ProducerWork,
+};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -74,8 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .rate(args.rate)
         .duration_secs(args.duration)
         .progress(args.progress)
-        .producer(QueueProducer { queue: queue.clone() })
-        .consumer(QueueConsumer { queue: queue.clone() });
+        .producer(QueueProducer {
+            queue: queue.clone(),
+        })
+        .consumer(QueueConsumer {
+            queue: queue.clone(),
+        });
 
     if let Some(csv) = args.csv {
         bench = bench.csv(csv);

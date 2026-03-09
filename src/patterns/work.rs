@@ -380,7 +380,10 @@ pub struct ProducerConsumerResults {
 
 impl ProducerConsumerResults {
     pub fn print_summary(&self) {
-        let in_flight = self.produced.successes.saturating_sub(self.consumed.successes);
+        let in_flight = self
+            .produced
+            .successes
+            .saturating_sub(self.consumed.successes);
         println!();
         println!("PRODUCER/CONSUMER RESULTS");
         println!(
@@ -417,7 +420,10 @@ pub struct AsyncTaskResults {
 
 impl AsyncTaskResults {
     pub fn print_summary(&self) {
-        let in_flight = self.submitted.successes.saturating_sub(self.completed.successes);
+        let in_flight = self
+            .submitted
+            .successes
+            .saturating_sub(self.completed.successes);
         println!();
         println!("ASYNC TASK RESULTS");
         println!(

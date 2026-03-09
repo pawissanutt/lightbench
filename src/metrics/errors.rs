@@ -20,7 +20,12 @@ impl ErrorCounter {
 
     /// Record an error with the given reason.
     pub async fn record(&self, reason: &str) {
-        *self.counts.lock().await.entry(reason.to_string()).or_insert(0) += 1;
+        *self
+            .counts
+            .lock()
+            .await
+            .entry(reason.to_string())
+            .or_insert(0) += 1;
     }
 
     /// Take the final error counts, consuming the accumulated data.

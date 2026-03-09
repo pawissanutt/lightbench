@@ -12,7 +12,9 @@
 //!     --submit-workers 4 --poll-workers 4 --rate 500 --duration 10
 //! ```
 
-use lightbench::{logging, now_unix_ns_estimate, AsyncTaskBenchmark, PollResult, PollWork, SubmitWork};
+use lightbench::{
+    logging, now_unix_ns_estimate, AsyncTaskBenchmark, PollResult, PollWork, SubmitWork,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -178,15 +180,13 @@ impl PollWork for HttpPoller {
     async fn poll(&self, task_id: u64, _: &mut ()) -> PollResult {
         let url = format!("{}/{}", self.base_url, task_id);
         match self.client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<PollResponse>().await {
-                    Ok(body) if body.completed => PollResult::Completed {
-                        latency_ns: body.latency_ns.unwrap_or(0),
-                    },
-                    Ok(_) => PollResult::Pending,
-                    Err(e) => PollResult::Error(e.to_string()),
-                }
-            }
+            Ok(resp) if resp.status().is_success() => match resp.json::<PollResponse>().await {
+                Ok(body) if body.completed => PollResult::Completed {
+                    latency_ns: body.latency_ns.unwrap_or(0),
+                },
+                Ok(_) => PollResult::Pending,
+                Err(e) => PollResult::Error(e.to_string()),
+            },
             _ => PollResult::Error("unknown task".into()),
         }
     }
@@ -223,8 +223,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .rate(args.rate)
         .duration_secs(args.duration)
         .progress(args.progress)
-        .submitter(HttpSubmitter { client: client.clone(), url: submit_url })
-        .poller(HttpPoller { client, base_url: poll_url });
+        .submitter(HttpSubmitter {
+            client: client.clone(),
+            url: submit_url,
+        })
+        .poller(HttpPoller {
+            client,
+            base_url: poll_url,
+        });
 
     if let Some(csv) = args.csv {
         bench = bench.csv(csv);

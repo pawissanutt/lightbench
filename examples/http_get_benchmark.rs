@@ -125,12 +125,20 @@ fn parse_args() -> Args {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--rate" | "-r" => args.rate = iter.next().and_then(|v| v.parse().ok()),
-            "--rate-per-worker" | "-R" => args.rate_per_worker = iter.next().and_then(|v| v.parse().ok()),
+            "--rate-per-worker" | "-R" => {
+                args.rate_per_worker = iter.next().and_then(|v| v.parse().ok())
+            }
             "--duration" | "-d" => {
-                args.duration = iter.next().and_then(|v| v.parse().ok()).unwrap_or(args.duration)
+                args.duration = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.duration)
             }
             "--workers" | "-w" => {
-                args.workers = iter.next().and_then(|v| v.parse().ok()).unwrap_or(args.workers)
+                args.workers = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.workers)
             }
             "--csv" => args.csv = iter.next(),
             "--no-progress" => args.progress = false,
