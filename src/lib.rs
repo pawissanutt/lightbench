@@ -14,17 +14,27 @@
 //!
 //! ```rust,no_run
 //! use lightbench::{Benchmark, WorkResult, now_unix_ns_estimate};
+//! use lightbench::patterns::work::BenchmarkWork;
+//!
+//! #[derive(Clone)]
+//! struct NoopWork;
+//!
+//! impl BenchmarkWork for NoopWork {
+//!     type State = ();
+//!     async fn init(&self) {}
+//!     async fn work(&self, _: &mut ()) -> WorkResult {
+//!         let start = now_unix_ns_estimate();
+//!         // ... do work ...
+//!         WorkResult::success(now_unix_ns_estimate() - start)
+//!     }
+//! }
 //!
 //! # tokio_test::block_on(async {
 //! let results = Benchmark::new()
 //!     .rate(1000.0)      // Total rate, auto-split across workers
 //!     .workers(4)
 //!     .duration_secs(10)
-//!     .work(|| Box::pin(async {
-//!         let start = now_unix_ns_estimate();
-//!         // ... do work ...
-//!         WorkResult::success(now_unix_ns_estimate() - start)
-//!     }))
+//!     .work(NoopWork)
 //!     .run()
 //!     .await;
 //!
