@@ -66,6 +66,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+type ProgressFn = Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>;
+
 /// Builder for producer/consumer benchmarks.
 ///
 /// Producers are rate-controlled; consumers run as fast as possible
@@ -80,7 +82,7 @@ pub struct ProducerConsumerBenchmark<PR = (), CO = ()> {
     duration: Duration,
     csv_path: Option<PathBuf>,
     show_progress: bool,
-    progress_fn: Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>,
+    progress_fn: ProgressFn,
     producer: Option<PR>,
     consumer: Option<CO>,
 }

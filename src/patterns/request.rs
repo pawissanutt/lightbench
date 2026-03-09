@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+type ProgressFn = Box<dyn Fn(&StatsSnapshot) -> Option<String> + Send + 'static>;
+
 /// Rate mode for benchmark.
 #[derive(Debug, Clone, Copy)]
 enum RateMode {
@@ -58,7 +60,7 @@ pub struct Benchmark<W = ()> {
     work: Option<W>,
     csv_path: Option<PathBuf>,
     show_progress: bool,
-    progress_fn: Box<dyn Fn(&StatsSnapshot) -> Option<String> + Send + 'static>,
+    progress_fn: ProgressFn,
 }
 
 impl Default for Benchmark<()> {

@@ -59,6 +59,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+type ProgressFn = Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>;
+
 /// Builder for async task benchmarks.
 ///
 /// Submit workers create tasks at a controlled rate; poll workers check for
@@ -71,7 +73,7 @@ pub struct AsyncTaskBenchmark<S = (), P = ()> {
     duration: Duration,
     csv_path: Option<PathBuf>,
     show_progress: bool,
-    progress_fn: Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>,
+    progress_fn: ProgressFn,
     submitter: Option<S>,
     poller: Option<P>,
 }
