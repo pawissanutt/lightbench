@@ -63,3 +63,14 @@ pub use patterns::work::{
 };
 pub use rate::{RateController, SharedRateController};
 pub use time_sync::{latency_ns, now_unix_ns_estimate};
+
+/// Like `println!` but prefixes every line with the elapsed time since the
+/// program started (e.g. `[  1.234s]`), producing a scrolling log that the
+/// user can review as history.
+#[macro_export]
+macro_rules! tprintln {
+    () => { println!() };
+    ($($arg:tt)*) => {
+        println!("[{:>8.3}s] {}", $crate::logging::elapsed_secs(), format!($($arg)*))
+    };
+}

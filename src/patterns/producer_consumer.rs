@@ -54,6 +54,7 @@
 //! ```
 
 use crate::metrics::errors::ErrorCounter;
+use crate::metrics::StatsSnapshot;
 use crate::patterns::work::{
     BenchmarkSummary, ConsumerWork, ProducerConsumerResults, ProducerWork,
 };
@@ -79,6 +80,7 @@ pub struct ProducerConsumerBenchmark<PR = (), CO = ()> {
     duration: Duration,
     csv_path: Option<PathBuf>,
     show_progress: bool,
+    progress_fn: Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>,
     producer: Option<PR>,
     consumer: Option<CO>,
 }
@@ -101,6 +103,16 @@ impl ProducerConsumerBenchmark<(), ()> {
             duration: Duration::from_secs(10),
             csv_path: None,
             show_progress: true,
+            progress_fn: Box::new(|p, c| {
+                let in_flight = p.sent_count.saturating_sub(c.received_count);
+                Some(format!(
+                    "  {} produced | {} consumed | {} in-flight | p50={:.2}ms",
+                    p.sent_count,
+                    c.received_count,
+                    in_flight,
+                    c.latency_ns_p50 as f64 / 1_000_000.0
+                ))
+            }),
             producer: None,
             consumer: None,
         }
@@ -150,6 +162,23 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
         self
     }
 
+    /// Set a custom progress formatter.
+    ///
+    /// The closure receives the producer [`StatsSnapshot`] and the consumer
+    /// [`StatsSnapshot`], and returns the message to print (without timestamp
+    /// — the `[N.NNNs]` prefix is always prepended). Return `None` to
+    /// suppress the line for that interval.
+    ///
+    /// Overrides the default `"N produced | N consumed | N in-flight | p50=…ms"` format.
+    /// Has no effect when [`progress`](Self::progress) is set to `false`.
+    pub fn on_progress<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static,
+    {
+        self.progress_fn = Box::new(f);
+        self
+    }
+
     /// Set the producer implementation.
     ///
     /// The framework clones `producer` once per producer worker. Put shared
@@ -163,6 +192,7 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
             duration: self.duration,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
+            progress_fn: self.progress_fn,
             producer: Some(p),
             consumer: self.consumer,
         }
@@ -179,6 +209,7 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
             duration: self.duration,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
+            progress_fn: self.progress_fn,
             producer: self.producer,
             consumer: Some(c),
         }
@@ -260,6 +291,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let snap_running = running.clone();
         let csv_path = self.csv_path.clone();
         let show_progress = self.show_progress;
+        let progress_fn = self.progress_fn;
         let snapshot_handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             let mut csv_writer = csv_path.as_ref().map(|p| {
@@ -300,19 +332,12 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
                 }
 
                 if show_progress {
-                    eprint!(
-                        "\r  {} produced | {} consumed | {} in-flight | p50={:.2}ms  ",
-                        p.sent_count,
-                        c.received_count,
-                        in_flight,
-                        c.latency_ns_p50 as f64 / 1_000_000.0
-                    );
+                    if let Some(line) = progress_fn(&p, &c) {
+                        crate::tprintln!("{}", line);
+                    }
                 } else {
                     println!("{}", row);
                 }
-            }
-            if show_progress {
-                eprintln!();
             }
         });
 

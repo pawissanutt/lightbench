@@ -48,6 +48,7 @@
 //! ```
 
 use crate::metrics::errors::ErrorCounter;
+use crate::metrics::StatsSnapshot;
 use crate::patterns::work::{AsyncTaskResults, BenchmarkSummary, PollResult, PollWork, SubmitWork};
 use crate::rate::RateController;
 use crate::Stats;
@@ -70,6 +71,7 @@ pub struct AsyncTaskBenchmark<S = (), P = ()> {
     duration: Duration,
     csv_path: Option<PathBuf>,
     show_progress: bool,
+    progress_fn: Box<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static>,
     submitter: Option<S>,
     poller: Option<P>,
 }
@@ -90,6 +92,16 @@ impl AsyncTaskBenchmark<(), ()> {
             duration: Duration::from_secs(10),
             csv_path: None,
             show_progress: true,
+            progress_fn: Box::new(|s, c| {
+                let in_flight = s.sent_count.saturating_sub(c.received_count);
+                Some(format!(
+                    "  {} submitted | {} completed | {} in-flight | p50={:.1}ms",
+                    s.sent_count,
+                    c.received_count,
+                    in_flight,
+                    c.latency_ns_p50 as f64 / 1_000_000.0
+                ))
+            }),
             submitter: None,
             poller: None,
         }
@@ -139,6 +151,23 @@ impl<S, P> AsyncTaskBenchmark<S, P> {
         self
     }
 
+    /// Set a custom progress formatter.
+    ///
+    /// The closure receives the submit [`StatsSnapshot`] and the complete
+    /// [`StatsSnapshot`], and returns the message to print (without timestamp
+    /// — the `[N.NNNs]` prefix is always prepended). Return `None` to
+    /// suppress the line for that interval.
+    ///
+    /// Overrides the default `"N submitted | N completed | N in-flight | p50=…ms"` format.
+    /// Has no effect when [`progress`](Self::progress) is set to `false`.
+    pub fn on_progress<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + 'static,
+    {
+        self.progress_fn = Box::new(f);
+        self
+    }
+
     /// Set the submit implementation.
     ///
     /// The framework clones `submitter` once per submit worker. Put shared
@@ -152,6 +181,7 @@ impl<S, P> AsyncTaskBenchmark<S, P> {
             duration: self.duration,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
+            progress_fn: self.progress_fn,
             submitter: Some(s),
             poller: self.poller,
         }
@@ -168,6 +198,7 @@ impl<S, P> AsyncTaskBenchmark<S, P> {
             duration: self.duration,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
+            progress_fn: self.progress_fn,
             submitter: self.submitter,
             poller: Some(p),
         }
@@ -268,6 +299,7 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         let snap_running = running.clone();
         let csv_path = self.csv_path.clone();
         let show_progress = self.show_progress;
+        let progress_fn = self.progress_fn;
         let snapshot_handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             let mut csv_writer = csv_path.as_ref().map(|p| {
@@ -306,19 +338,12 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
                 }
 
                 if show_progress {
-                    eprint!(
-                        "\r  {} submitted | {} completed | {} in-flight | p50={:.1}ms  ",
-                        s.sent_count,
-                        c.received_count,
-                        in_flight,
-                        c.latency_ns_p50 as f64 / 1_000_000.0
-                    );
+                    if let Some(line) = progress_fn(&s, &c) {
+                        crate::tprintln!("{}", line);
+                    }
                 } else {
                     println!("{}", row);
                 }
-            }
-            if show_progress {
-                eprintln!();
             }
         });
 

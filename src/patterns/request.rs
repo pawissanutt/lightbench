@@ -58,6 +58,7 @@ pub struct Benchmark<W = ()> {
     work: Option<W>,
     csv_path: Option<PathBuf>,
     show_progress: bool,
+    progress_fn: Box<dyn Fn(&StatsSnapshot) -> Option<String> + Send + 'static>,
 }
 
 impl Default for Benchmark<()> {
@@ -80,6 +81,21 @@ impl Benchmark<()> {
             work: None,
             csv_path: None,
             show_progress: true,
+            progress_fn: Box::new(|snap| {
+                let p50_ms = snap.latency_ns_p50 as f64 / 1_000_000.0;
+                let ok_rate = if snap.sent_count > 0 {
+                    snap.received_count as f64 / snap.sent_count as f64 * 100.0
+                } else {
+                    0.0
+                };
+                Some(format!(
+                    "  {} req | {:.0} req/s | p50={:.2}ms | {:.0}% ok",
+                    snap.received_count,
+                    snap.interval_throughput(),
+                    p50_ms,
+                    ok_rate,
+                ))
+            }),
         }
     }
 }
@@ -157,6 +173,22 @@ impl<W> Benchmark<W> {
         self
     }
 
+    /// Set a custom progress formatter.
+    ///
+    /// The closure receives a [`StatsSnapshot`] and returns the message to
+    /// print (without timestamp — the `[N.NNNs]` prefix is always prepended).
+    /// Return `None` to suppress the line for that interval.
+    ///
+    /// Overrides the default `"N req | N req/s | p50=…ms | N% ok"` format.
+    /// Has no effect when [`progress`](Self::progress) is set to `false`.
+    pub fn on_progress<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&StatsSnapshot) -> Option<String> + Send + 'static,
+    {
+        self.progress_fn = Box::new(f);
+        self
+    }
+
     /// Set the work implementation.
     ///
     /// The framework clones `work` once per worker. Put shared resources
@@ -172,6 +204,7 @@ impl<W> Benchmark<W> {
             work: Some(work),
             csv_path: self.csv_path,
             show_progress: self.show_progress,
+            progress_fn: self.progress_fn,
         }
     }
 }
@@ -294,6 +327,7 @@ impl<W: BenchmarkWork> Benchmark<W> {
         let snapshot_interval = self.snapshot_interval;
         let csv_path = self.csv_path.clone();
         let show_progress = self.show_progress;
+        let progress_fn = self.progress_fn;
         let snapshot_handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(snapshot_interval);
             let mut csv_writer = csv_path.as_ref().map(|p| {
@@ -315,25 +349,12 @@ impl<W: BenchmarkWork> Benchmark<W> {
                     writeln!(w, "{}", snapshot.to_csv_row()).ok();
                 }
                 if show_progress {
-                    let p50_ms = snapshot.latency_ns_p50 as f64 / 1_000_000.0;
-                    let ok_rate = if snapshot.sent_count > 0 {
-                        snapshot.received_count as f64 / snapshot.sent_count as f64 * 100.0
-                    } else {
-                        0.0
-                    };
-                    eprint!(
-                        "\r  {} req | {:.0} req/s | p50={:.2}ms | {:.0}% ok   ",
-                        snapshot.received_count,
-                        snapshot.interval_throughput(),
-                        p50_ms,
-                        ok_rate,
-                    );
+                    if let Some(line) = progress_fn(&snapshot) {
+                        crate::tprintln!("{}", line);
+                    }
                 } else {
                     println!("{}", snapshot.to_csv_row());
                 }
-            }
-            if show_progress {
-                eprintln!();
             }
         });
 
