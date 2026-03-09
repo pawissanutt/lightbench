@@ -1,11 +1,22 @@
 # Lightbench
 
-A lightweight benchmarking framework for measuring latency, throughput, and reliability metrics.
+A lightweight load testing framework for measuring latency, throughput, and reliability of external systems under sustained, rate-controlled load.
+
+> **Load testing vs micro-benchmarking**: Lightbench is designed to drive load against
+> external systems (HTTP services, message queues, async job APIs) — not to measure
+> isolated code execution times. For micro-benchmarking Rust code, use
+> [Criterion](https://github.com/bheisler/criterion.rs).
+
+## Motivation
+
+Built for academic research. Most load testers are great for DevOps — graphical UIs, rich dashboards, lots of bells and whistles — but they get in the way when you just need clean, reproducible numbers for a paper. The scriptable ones tend to be heavy enough that you start wondering how much of your measured latency is actually the tester's fault.
+
+Rust fixes that. The overhead is tiny and predictable — no GC, no interpreter — so you can trust your numbers. And since a single Rust process can push very high request rates, you don't need a distributed load generation cluster just to stress-test one box.
 
 ## Features
 
-- **Three Benchmark Patterns**: Request, Producer/Consumer, and Async Task (submit + poll)
-- **Benchmark Runner**: High-level builder with automatic rate distribution across workers
+- **Three Load Test Patterns**: Request, Producer/Consumer, and Async Task (submit + poll)
+- **Load Test Runner**: High-level builder with automatic rate distribution across workers
 - **Rate Control**: Per-worker token bucket (`RateController`) and shared lock-free pool (`SharedRateController`)
 - **CSV Export**: Write snapshots to file with `.csv(path)` option
 - **Progress Display**: User-friendly live progress or raw CSV output
@@ -23,7 +34,7 @@ lightbench = "0.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
-### Benchmark Pattern (Request/Response)
+### Request Pattern (Request/Response)
 
 ```rust
 use lightbench::{Benchmark, BenchmarkWork, WorkResult, now_unix_ns_estimate};
@@ -43,7 +54,7 @@ impl BenchmarkWork for MyWork {
 
     async fn work(&self, state: &mut MyState) -> WorkResult {
         let start = now_unix_ns_estimate();
-        // ... your benchmark operation using state.client ...
+        // ... your load test operation using state.client ...
         WorkResult::success(now_unix_ns_estimate() - start)
     }
 }
@@ -194,7 +205,7 @@ Options: `--submit-workers <N>`, `--poll-workers <N>`, `--rate <N>`, `--duration
 
 ### `patterns`
 
-Three benchmark patterns, each a builder plus results type.
+Three load test patterns, each a builder plus results type.
 
 **`Benchmark`** (request pattern):
 ```rust
@@ -209,7 +220,7 @@ impl BenchmarkWork for MyWork {
     async fn init(&self) -> MyState { MyState { client: reqwest::Client::new() } }
     async fn work(&self, s: &mut MyState) -> WorkResult {
         let start = now_unix_ns_estimate();
-        // ... use s.client ...
+        // ... use s.client to call the system under test ...
         WorkResult::success(now_unix_ns_estimate() - start)
     }
 }

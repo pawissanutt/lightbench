@@ -2,17 +2,23 @@
 
 ## Overview
 
-Lightbench is a transport-agnostic benchmarking library providing foundational
-components for building high-performance latency and throughput benchmarks. It ships
-with three ready-made benchmark patterns (request, producer/consumer, async task) and
-a composable set of metrics, rate control, and output primitives.
+Lightbench is a transport-agnostic **load testing** library. It drives sustained,
+rate-controlled load against external systems — HTTP services, message queues, async
+job APIs, or any other networked target — and measures their latency, throughput, and
+reliability under that load. It ships with three ready-made load test patterns
+(request, producer/consumer, async task) and a composable set of metrics, rate
+control, and output primitives.
+
+This is distinct from micro-benchmarking (e.g., Criterion), which measures the
+execution time of isolated Rust code. Lightbench is about what happens to a *system*
+when you send it 10 000 requests per second for 60 seconds.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Application                               │
-│  (HTTP benchmark, queue benchmark, custom benchmark)             │
+│  (HTTP load test, queue load test, custom load test)             │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -36,9 +42,10 @@ a composable set of metrics, rate control, and output primitives.
 
 ### 1. Pattern-Based
 
-The framework ships three benchmark patterns that encode common measurement workflows.
-Users supply closures for the actual work; the framework handles rate control, worker
-management, progress display, and CSV export.
+The framework ships three load test patterns that encode common measurement workflows.
+Users supply closures for the actual work (e.g., sending an HTTP request, pushing to a
+queue); the framework handles rate control, worker management, progress display, and
+CSV export.
 
 ### 2. Lock-Free Hot Paths
 
