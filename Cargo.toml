@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A transport-agnostic benchmarking framework for latency and throughput measurement"
 license = "MIT OR Apache-2.0"
-keywords = ["benchmark", "latency", "throughput", "metrics", "performance"]
+keywords = ["benchmark"]
 categories = ["development-tools::profiling", "asynchronous"]
+repository = "https://github.com/pawissanutt/lightbench"
 
 [dependencies]
 tokio = { version = "1.48", features = ["rt", "time", "sync", "fs", "io-util"] }
