@@ -51,6 +51,7 @@
 //! - [`output`] - CSV/stdout output writers
 //! - [`logging`] - Tracing initialization
 
+pub mod config;
 pub mod error;
 pub mod logging;
 pub mod metrics;
@@ -60,6 +61,7 @@ pub mod rate;
 pub mod time_sync;
 
 // Convenience re-exports
+pub use config::BenchmarkConfig;
 pub use error::FrameworkError;
 pub use metrics::errors::ErrorCounter;
 pub use metrics::{SequenceTracker, Stats, StatsSnapshot};

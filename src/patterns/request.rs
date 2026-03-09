@@ -109,6 +109,42 @@ impl Benchmark<()> {
             }),
         }
     }
+
+    /// Create a `Benchmark` from a [`BenchmarkConfig`](crate::config::BenchmarkConfig).
+    ///
+    /// All fields of the config are applied to the builder; the result is
+    /// ready for `.work(…).run()`.
+    pub fn from_config(config: crate::config::BenchmarkConfig) -> Self {
+        let mut bench = Benchmark::new()
+            .workers(config.workers)
+            .duration_secs(config.duration)
+            .burst_factor(config.burst_factor)
+            .progress(!config.no_progress)
+            .show_ramp_progress(!config.hide_ramp_progress);
+
+        bench = match (config.rate, config.rate_per_worker) {
+            (Some(r), _) => bench.rate(r),
+            (_, Some(r)) => bench.rate_per_worker(r),
+            _ => bench,
+        };
+
+        if let Some(secs) = config.ramp_up {
+            bench = bench.ramp_up(Duration::from_secs(secs));
+            bench = bench.ramp_start_rate(config.ramp_start_rate);
+        }
+
+        if let Some(csv) = config.csv {
+            bench = bench.csv(csv);
+        }
+
+        bench
+    }
+}
+
+impl From<crate::config::BenchmarkConfig> for Benchmark<()> {
+    fn from(config: crate::config::BenchmarkConfig) -> Self {
+        Benchmark::from_config(config)
+    }
 }
 
 impl<W> Benchmark<W> {

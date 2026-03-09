@@ -32,6 +32,17 @@ pub use work::{
 pub(crate) type DualProgressFn =
     Arc<dyn Fn(&StatsSnapshot, &StatsSnapshot) -> Option<String> + Send + Sync + 'static>;
 
+/// Display / CSV configuration for [`spawn_dual_snapshot_task`].
+pub(crate) struct DualSnapshotConfig {
+    pub in_ramp: Arc<AtomicBool>,
+    pub show_ramp_progress: bool,
+    pub csv_path: Option<PathBuf>,
+    pub show_progress: bool,
+    pub progress_fn: DualProgressFn,
+    pub csv_header: &'static str,
+    pub csv_row_fn: fn(&StatsSnapshot, &StatsSnapshot) -> String,
+}
+
 /// Spawn a snapshot task that reads two stat pools and writes CSV / progress.
 ///
 /// While `in_ramp` is true, lines are prefixed with `[RAMP]` (or suppressed
@@ -40,14 +51,17 @@ pub(crate) fn spawn_dual_snapshot_task(
     primary_stats: Arc<Stats>,
     secondary_stats: Arc<Stats>,
     running: Arc<AtomicBool>,
-    in_ramp: Arc<AtomicBool>,
-    show_ramp_progress: bool,
-    csv_path: Option<PathBuf>,
-    show_progress: bool,
-    progress_fn: DualProgressFn,
-    csv_header: &str,
-    csv_row_fn: fn(&StatsSnapshot, &StatsSnapshot) -> String,
+    cfg: DualSnapshotConfig,
 ) -> tokio::task::JoinHandle<()> {
+    let DualSnapshotConfig {
+        in_ramp,
+        show_ramp_progress,
+        csv_path,
+        show_progress,
+        progress_fn,
+        csv_header,
+        csv_row_fn,
+    } = cfg;
     let header = csv_header.to_owned();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));

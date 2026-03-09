@@ -8,12 +8,14 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --release --example async_task -- \
+//! cargo run --release --example async_task --features clap -- \
 //!     --submit-workers 4 --poll-workers 4 --rate 500 --duration 10
 //! ```
 
+use clap::Parser;
 use lightbench::{
-    logging, now_unix_ns_estimate, AsyncTaskBenchmark, PollResult, PollWork, SubmitWork,
+    logging, now_unix_ns_estimate, AsyncTaskBenchmark, BenchmarkConfig, PollResult, PollWork,
+    SubmitWork,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -196,11 +198,32 @@ impl PollWork for HttpPoller {
 // Main
 // ============================================================================
 
+// ---- CLI args --------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(about = "Submit-and-poll async task benchmark")]
+struct Args {
+    /// Number of submit workers.
+    #[arg(short = 's', long = "submit-workers", default_value = "2")]
+    submit_workers: usize,
+
+    /// Number of poll workers.
+    #[arg(short = 'p', long = "poll-workers", default_value = "2")]
+    poll_workers: usize,
+
+    /// Simulated server-side processing delay in milliseconds.
+    #[arg(short = 'D', long = "delay", default_value = "10")]
+    processing_delay_ms: u64,
+
+    #[command(flatten)]
+    bench: BenchmarkConfig,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     logging::init("info").ok();
 
-    let args = parse_args();
+    let args = Args::parse();
     let addr: std::net::SocketAddr = "127.0.0.1:8081".parse()?;
 
     // Start the server (system under test)
@@ -213,6 +236,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pool_max_idle_per_host(args.submit_workers + args.poll_workers)
         .build()?;
 
+    let bench_cfg = args.bench;
+    let rate = bench_cfg.rate.unwrap_or(500.0);
+    let ramp_up = bench_cfg.ramp_up;
+    let ramp_start_rate = bench_cfg.ramp_start_rate;
+    let csv = bench_cfg.csv.clone();
+
     // Build and run benchmark using the framework pattern
     let submit_url = format!("http://{}/submit", addr);
     let poll_url = format!("http://{}/poll", addr);
@@ -220,10 +249,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bench = AsyncTaskBenchmark::new()
         .submit_workers(args.submit_workers)
         .poll_workers(args.poll_workers)
-        .rate(args.rate)
-        .burst_factor(args.burst_factor)
-        .duration_secs(args.duration)
-        .progress(args.progress)
+        .rate(rate)
+        .burst_factor(bench_cfg.burst_factor)
+        .duration_secs(bench_cfg.duration)
+        .progress(!bench_cfg.no_progress)
+        .show_ramp_progress(!bench_cfg.hide_ramp_progress)
         .submitter(HttpSubmitter {
             client: client.clone(),
             url: submit_url,
@@ -233,120 +263,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_url: poll_url,
         });
 
-    if let Some(secs) = args.ramp_up {
+    if let Some(secs) = ramp_up {
         bench = bench.ramp_up(Duration::from_secs(secs));
-        bench = bench.ramp_start_rate(args.ramp_start_rate);
+        bench = bench.ramp_start_rate(ramp_start_rate);
     }
 
-    if let Some(csv) = args.csv {
-        bench = bench.csv(csv);
+    if let Some(path) = csv {
+        bench = bench.csv(path);
     }
 
     let results = bench.run().await;
     results.print_summary();
     Ok(())
-}
-
-struct Args {
-    submit_workers: usize,
-    poll_workers: usize,
-    rate: f64,
-    processing_delay_ms: u64,
-    duration: u64,
-    ramp_up: Option<u64>,
-    ramp_start_rate: f64,
-    burst_factor: f64,
-    csv: Option<String>,
-    progress: bool,
-    show_ramp_progress: bool,
-}
-
-fn parse_args() -> Args {
-    let mut args = Args {
-        submit_workers: 2,
-        poll_workers: 2,
-        rate: 500.0,
-        processing_delay_ms: 10,
-        duration: 10,
-        ramp_up: None,
-        ramp_start_rate: 0.0,
-        burst_factor: 0.1,
-        csv: None,
-        progress: true,
-        show_ramp_progress: true,
-    };
-    let mut iter = std::env::args().skip(1);
-
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--submit-workers" | "-s" => {
-                args.submit_workers = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.submit_workers)
-            }
-            "--poll-workers" | "-p" => {
-                args.poll_workers = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.poll_workers)
-            }
-            "--rate" | "-r" => {
-                args.rate = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.rate)
-            }
-            "--delay" | "-D" => {
-                args.processing_delay_ms = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.processing_delay_ms)
-            }
-            "--duration" | "-d" => {
-                args.duration = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.duration)
-            }
-            "--csv" => args.csv = iter.next(),
-            "--no-progress" => args.progress = false,
-            "--hide-ramp-progress" => args.show_ramp_progress = false,
-            "--ramp-up" | "-u" => {
-                args.ramp_up = iter.next().and_then(|v| v.parse().ok())
-            }
-            "--ramp-start" => {
-                args.ramp_start_rate = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.ramp_start_rate)
-            }
-            "--burst-factor" => {
-                args.burst_factor = iter
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(args.burst_factor)
-            }
-            "--help" | "-h" => {
-                println!(
-                    "Usage: async_task [OPTIONS]\n\
-                     Options:\n  \
-                       -s, --submit-workers <N>  Number of submit workers (default: 2)\n  \
-                       -p, --poll-workers <N>    Number of poll workers (default: 2)\n  \
-                       -r, --rate <N>            Submit rate req/s (default: 500)\n  \
-                       -D, --delay <MS>          Simulated processing delay ms (default: 10)\n  \
-                       -d, --duration <S>        Duration in seconds (default: 10)\n  \
-                       -u, --ramp-up <S>         Ramp-up duration in seconds (pre-measurement)\n  \
-                           --ramp-start <N>      Initial rate at start of ramp (default: 0)\n  \
-                           --burst-factor <F>    Burst allowance in seconds of tokens (default: 0.1)\n  \
-                       --csv <FILE>              Write snapshots to CSV file\n  \
-                       --no-progress             Disable progress display\n  \
-                       --hide-ramp-progress      Hide progress output during ramp-up period"
-                );
-                std::process::exit(0);
-            }
-            _ => {}
-        }
-    }
-    args
 }

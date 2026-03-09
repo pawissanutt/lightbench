@@ -1,6 +1,6 @@
 [package]
 name = "lightbench"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A transport-agnostic benchmarking framework for latency and throughput measurement"
 license = "MIT OR Apache-2.0"
@@ -8,12 +8,16 @@ keywords = ["benchmark"]
 categories = ["development-tools::profiling", "asynchronous"]
 repository = "https://github.com/pawissanutt/lightbench"
 
+[features]
+clap = ["dep:clap"]
+
 [dependencies]
 tokio = { version = "1", features = ["rt", "time", "sync", "fs", "io-util"] }
 hdrhistogram = "7.5"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
 axum = "0.8"
@@ -25,15 +29,19 @@ tokio-test = "0.4"
 [[example]]
 name = "http_get"
 path = "examples/http_get.rs"
+required-features = ["clap"]
 
 [[example]]
 name = "producer_consumer"
 path = "examples/producer_consumer.rs"
+required-features = ["clap"]
 
 [[example]]
 name = "async_task"
 path = "examples/async_task.rs"
+required-features = ["clap"]
 
 [[example]]
 name = "noop"
 path = "examples/noop.rs"
+required-features = ["clap"]

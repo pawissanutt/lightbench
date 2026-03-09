@@ -51,7 +51,7 @@ use crate::metrics::errors::ErrorCounter;
 use crate::metrics::StatsSnapshot;
 use crate::patterns::request::ramp_drive;
 use crate::patterns::work::{AsyncTaskResults, BenchmarkSummary, PollResult, PollWork, SubmitWork};
-use crate::patterns::{spawn_dual_snapshot_task, DualProgressFn};
+use crate::patterns::{spawn_dual_snapshot_task, DualProgressFn, DualSnapshotConfig};
 use crate::rate::DynamicRateController;
 use crate::Stats;
 use std::path::PathBuf;
@@ -293,25 +293,27 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
             submit_stats.clone(),
             complete_stats.clone(),
             running.clone(),
-            in_ramp.clone(),
-            self.show_ramp_progress,
-            csv_path,
-            show_progress,
-            progress_fn,
-            "timestamp,submitted,completed,in_flight,throughput,p50_ms,p95_ms,p99_ms",
-            |s, c| {
-                let in_flight = s.sent_count.saturating_sub(c.received_count);
-                format!(
-                    "{},{},{},{},{:.2},{:.3},{:.3},{:.3}",
-                    s.timestamp,
-                    s.sent_count,
-                    c.received_count,
-                    in_flight,
-                    c.interval_throughput(),
-                    c.latency_ns_p50 as f64 / 1_000_000.0,
-                    c.latency_ns_p95 as f64 / 1_000_000.0,
-                    c.latency_ns_p99 as f64 / 1_000_000.0,
-                )
+            DualSnapshotConfig {
+                in_ramp: in_ramp.clone(),
+                show_ramp_progress: self.show_ramp_progress,
+                csv_path,
+                show_progress,
+                progress_fn,
+                csv_header: "timestamp,submitted,completed,in_flight,throughput,p50_ms,p95_ms,p99_ms",
+                csv_row_fn: |s, c| {
+                    let in_flight = s.sent_count.saturating_sub(c.received_count);
+                    format!(
+                        "{},{},{},{},{:.2},{:.3},{:.3},{:.3}",
+                        s.timestamp,
+                        s.sent_count,
+                        c.received_count,
+                        in_flight,
+                        c.interval_throughput(),
+                        c.latency_ns_p50 as f64 / 1_000_000.0,
+                        c.latency_ns_p95 as f64 / 1_000_000.0,
+                        c.latency_ns_p99 as f64 / 1_000_000.0,
+                    )
+                },
             },
         )) } else { None };
 
