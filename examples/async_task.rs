@@ -215,6 +215,11 @@ struct Args {
     #[arg(short = 'D', long = "delay", default_value = "10")]
     processing_delay_ms: u64,
 
+    /// Drain timeout in seconds: wait for in-flight tasks after benchmark ends.
+    /// Set to 0 to disable draining.
+    #[arg(long = "drain-timeout", default_value = "30")]
+    drain_timeout: u64,
+
     #[command(flatten)]
     bench: BenchmarkConfig,
 }
@@ -262,6 +267,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             client,
             base_url: poll_url,
         });
+
+    if args.drain_timeout > 0 {
+        bench = bench.drain_timeout_secs(args.drain_timeout);
+    } else {
+        bench = bench.drain_timeout(None);
+    }
 
     if let Some(secs) = ramp_up {
         bench = bench.ramp_up(Duration::from_secs(secs));

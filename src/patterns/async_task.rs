@@ -76,6 +76,7 @@ pub struct AsyncTaskBenchmark<S = (), P = ()> {
     burst_factor: f64,
     show_ramp_progress: bool,
     duration: Duration,
+    drain_timeout: Option<Duration>,
     csv_path: Option<PathBuf>,
     show_progress: bool,
     progress_fn: ProgressFn,
@@ -101,6 +102,7 @@ impl AsyncTaskBenchmark<(), ()> {
             burst_factor: 0.1,
             show_ramp_progress: true,
             duration: Duration::from_secs(10),
+            drain_timeout: Some(Duration::from_secs(30)),
             csv_path: None,
             show_progress: true,
             progress_fn: Arc::new(|s, c| {
@@ -174,6 +176,21 @@ impl<S, P> AsyncTaskBenchmark<S, P> {
         self
     }
 
+    /// Wait for all pending tasks to drain after the benchmark duration ends.
+    ///
+    /// Set the maximum time to wait for in-flight tasks to complete.
+    /// Pass `None` to disable draining (default: 30s).
+    pub fn drain_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.drain_timeout = timeout;
+        self
+    }
+
+    /// Wait for all pending tasks to drain with the given timeout in seconds.
+    pub fn drain_timeout_secs(mut self, secs: u64) -> Self {
+        self.drain_timeout = Some(Duration::from_secs(secs));
+        self
+    }
+
     /// Set CSV output file path.
     pub fn csv<PP: Into<PathBuf>>(mut self, path: PP) -> Self {
         self.csv_path = Some(path.into());
@@ -208,6 +225,7 @@ impl<S, P> AsyncTaskBenchmark<S, P> {
             burst_factor: self.burst_factor,
             show_ramp_progress: self.show_ramp_progress,
             duration: self.duration,
+            drain_timeout: self.drain_timeout,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
             progress_fn: self.progress_fn,
@@ -227,6 +245,7 @@ impl<S, P> AsyncTaskBenchmark<S, P> {
             burst_factor: self.burst_factor,
             show_ramp_progress: self.show_ramp_progress,
             duration: self.duration,
+            drain_timeout: self.drain_timeout,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
             progress_fn: self.progress_fn,
@@ -245,6 +264,7 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         let submit_stats = Arc::new(Stats::new());
         let complete_stats = Arc::new(Stats::new());
         let running = Arc::new(AtomicBool::new(true));
+        let submitting = Arc::new(AtomicBool::new(true));
         let pending: Arc<RwLock<Vec<u64>>> = Arc::new(RwLock::new(Vec::new()));
         let errors = ErrorCounter::new();
         let in_ramp = Arc::new(AtomicBool::new(self.ramp_up.is_some()));
@@ -260,26 +280,27 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         let show_progress = self.show_progress;
         let csv_path = self.csv_path.clone();
         let progress_fn = self.progress_fn;
-        let mut handles = Vec::new();
+        let mut submit_handles = Vec::new();
+        let mut poll_handles = Vec::new();
 
         // ---- Submit workers -----------------------------------------------
         let start_rate = if self.ramp_up.is_some() { self.ramp_start_rate } else { self.rate };
         let rate_ctrl = DynamicRateController::with_burst(start_rate, self.burst_factor);
 
         for _ in 0..self.submit_workers {
-            handles.push(spawn_submit_worker(
+            submit_handles.push(spawn_submit_worker(
                 submitter.clone(),
                 rate_ctrl.clone(),
                 submit_stats.clone(),
                 pending.clone(),
                 errors.clone(),
-                running.clone(),
+                submitting.clone(),
             ));
         }
 
         // ---- Poll workers -------------------------------------------------
         for _ in 0..self.poll_workers {
-            handles.push(spawn_poll_worker(
+            poll_handles.push(spawn_poll_worker(
                 poller.clone(),
                 complete_stats.clone(),
                 pending.clone(),
@@ -324,11 +345,35 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
             in_ramp.store(false, Ordering::SeqCst);
         }
 
-        // ---- Wait and collect ---------------------------------------------
+        // ---- Wait for benchmark duration -----------------------------------
         tokio::time::sleep(self.duration).await;
+        submitting.store(false, Ordering::SeqCst);
+
+        for handle in submit_handles {
+            let _ = handle.await;
+        }
+
+        // ---- Drain pending tasks -------------------------------------------
+        if let Some(drain_dur) = self.drain_timeout {
+            tracing::info!("Benchmark duration complete, draining pending tasks (timeout: {}s)", drain_dur.as_secs());
+            let deadline = tokio::time::Instant::now() + drain_dur;
+            loop {
+                let remaining = pending.read().await.len();
+                if remaining == 0 {
+                    tracing::info!("All pending tasks drained");
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::warn!("{} tasks still pending after drain timeout", remaining);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
         running.store(false, Ordering::SeqCst);
 
-        for handle in handles {
+        for handle in poll_handles {
             let _ = handle.await;
         }
         if let Some(h) = snapshot_handle { let _ = h.await; }
