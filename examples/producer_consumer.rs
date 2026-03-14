@@ -15,8 +15,8 @@
 
 use clap::Parser;
 use lightbench::{
-    logging, now_unix_ns_estimate, BenchmarkConfig, ConsumerWork, ProducerConsumerBenchmark,
-    ProducerWork,
+    logging, now_unix_ns_estimate, BenchmarkConfig, ConsumerRecorder, ConsumerWork,
+    ProducerConsumerBenchmark, ProducerWork,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -70,12 +70,18 @@ struct QueueConsumer {
 impl ConsumerWork for QueueConsumer {
     type State = ();
     async fn init(&self) -> () {}
-    async fn consume(&self, _: &mut ()) -> Option<u64> {
-        self.queue
-            .lock()
-            .await
-            .pop_front()
-            .map(|ts| now_unix_ns_estimate().saturating_sub(ts))
+    async fn run(&self, _state: (), recorder: ConsumerRecorder) {
+        while recorder.is_running() {
+            let item = self.queue.lock().await.pop_front();
+            match item {
+                Some(ts) => {
+                    recorder
+                        .record(now_unix_ns_estimate().saturating_sub(ts))
+                        .await;
+                }
+                None => tokio::task::yield_now().await,
+            }
+        }
     }
 }
 
@@ -110,6 +116,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .consumer(QueueConsumer {
             queue: queue.clone(),
         });
+
+    if bench_cfg.drain_timeout > 0 {
+        bench = bench.drain_timeout_secs(bench_cfg.drain_timeout);
+    } else {
+        bench = bench.drain_timeout(None);
+    }
 
     if let Some(secs) = ramp_up {
         bench = bench.ramp_up(Duration::from_secs(secs));

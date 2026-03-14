@@ -4,16 +4,20 @@
 //! Shared resources (`reqwest::Client`, `Arc<Pool>`, etc.) live in
 //! `Self` and remain shared across workers through `Clone`. Per-worker
 //! resources (dedicated connections, local buffers) live in
-//! `Self::State` and are created by [`init`] / dropped by [`cleanup`].
+//! `Self::State` and are created by [`init`].
+//!
+//! **Consumer note:** [`ConsumerWork`] owns its event loop — the framework
+//! calls [`ConsumerWork::run`] once per worker with a [`ConsumerRecorder`]
+//! handle for reporting consumed items.
 //!
 //! [`init`]: BenchmarkWork::init
-//! [`cleanup`]: BenchmarkWork::cleanup
 
 use crate::metrics::errors::ErrorCounter;
 use crate::metrics::StatsSnapshot;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 // ============================================================================
@@ -163,23 +167,73 @@ pub trait ProducerWork: Clone + Send + Sync + 'static {
     }
 }
 
+/// A handle passed to [`ConsumerWork::run`] for reporting consumed items
+/// back to the framework.
+///
+/// The consumer owns its event loop and calls [`record`](Self::record) each
+/// time it successfully processes an item. Check [`is_running`](Self::is_running)
+/// to know when the framework wants the consumer to stop.
+#[derive(Clone)]
+pub struct ConsumerRecorder {
+    stats: Arc<crate::Stats>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ConsumerRecorder {
+    pub(crate) fn new(
+        stats: Arc<crate::Stats>,
+        running: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self { stats, running }
+    }
+
+    /// Record a consumed item with its latency in nanoseconds.
+    pub async fn record(&self, latency_ns: u64) {
+        self.stats.record_received(latency_ns).await;
+    }
+
+    /// Returns `true` while the benchmark is still running.
+    ///
+    /// The consumer should exit its loop when this returns `false`.
+    pub fn is_running(&self) -> bool {
+        self.running.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Worker lifecycle for the **consumer** side of a producer/consumer benchmark.
+///
+/// Unlike the producer (which is rate-controlled by the framework), the
+/// consumer **owns its event loop**. This is ideal for subscription-based
+/// APIs where messages are pushed to the consumer (e.g. message brokers,
+/// event streams).
+///
+/// The framework spawns one task per consumer worker and hands it a
+/// [`ConsumerRecorder`] to report stats. The consumer should:
+/// 1. Subscribe / connect in [`run`](Self::run).
+/// 2. Loop while [`recorder.is_running()`](ConsumerRecorder::is_running).
+/// 3. Call [`recorder.record(latency_ns)`](ConsumerRecorder::record) for each item.
 pub trait ConsumerWork: Clone + Send + Sync + 'static {
-    /// Per-worker state.
+    /// Per-worker state created by [`init`] and passed to [`run`].
+    ///
+    /// [`init`]: ConsumerWork::init
+    /// [`run`]: ConsumerWork::run
     type State: Send + 'static;
 
+    /// Create per-worker state. Called once before [`run`].
+    ///
+    /// [`run`]: ConsumerWork::run
     fn init(&self) -> impl Future<Output = Self::State> + Send;
 
-    /// Try to consume one item.
+    /// Run the consumer loop.
     ///
-    /// Return `Some(latency_ns)` when an item was consumed (latency = time
-    /// the item spent in the queue). Return `None` when the queue is empty;
-    /// the worker yields and retries immediately.
-    fn consume(&self, state: &mut Self::State) -> impl Future<Output = Option<u64>> + Send;
-
-    fn cleanup(&self, _state: Self::State) -> impl Future<Output = ()> + Send {
-        async {}
-    }
+    /// The consumer fully controls its own loop. Use `recorder` to report
+    /// consumed items back to the framework. Exit when
+    /// [`recorder.is_running()`](ConsumerRecorder::is_running) returns `false`.
+    fn run(
+        &self,
+        state: Self::State,
+        recorder: ConsumerRecorder,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 /// Worker lifecycle for the **submit** side of an async-task benchmark.

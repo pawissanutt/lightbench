@@ -1,7 +1,7 @@
 //! Benchmark patterns for common workload types.
 //!
 //! - [`request`] - Simple request/response (fire-and-measure) pattern
-//! - [`producer_consumer`] - Queue-based producer/consumer pattern
+//! - [`producer_consumer`] - Producer/consumer pattern (consumer owns its event loop)
 //! - [`async_task`] - Submit-and-poll async task pattern
 //!
 //! Worker lifecycle traits live in [`work`].
@@ -23,8 +23,9 @@ pub use async_task::AsyncTaskBenchmark;
 pub use producer_consumer::ProducerConsumerBenchmark;
 pub use request::Benchmark;
 pub use work::{
-    AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerWork, PollResult,
-    PollWork, ProducerConsumerResults, ProducerWork, SubmitWork, WorkResult,
+    AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerRecorder,
+    ConsumerWork, PollResult, PollWork, ProducerConsumerResults, ProducerWork, SubmitWork,
+    WorkResult,
 };
 
 // ── Shared helpers for dual-stat patterns (producer/consumer, submit/poll) ──

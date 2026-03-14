@@ -87,36 +87,59 @@ async fn main() {
 ### Producer/Consumer Pattern
 
 ```rust
-use lightbench::{ProducerConsumerBenchmark, now_unix_ns_estimate};
+use lightbench::{
+    ProducerConsumerBenchmark, ProducerWork, ConsumerWork,
+    ConsumerRecorder, now_unix_ns_estimate,
+};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+type Queue = Arc<Mutex<VecDeque<u64>>>;
+
+#[derive(Clone)]
+struct QueueProducer { queue: Queue }
+
+impl ProducerWork for QueueProducer {
+    type State = ();
+    async fn init(&self) -> () {}
+    async fn produce(&self, _: &mut ()) -> Result<(), String> {
+        self.queue.lock().await.push_back(now_unix_ns_estimate());
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct QueueConsumer { queue: Queue }
+
+impl ConsumerWork for QueueConsumer {
+    type State = ();
+    async fn init(&self) -> () {}
+    async fn run(&self, _state: (), recorder: ConsumerRecorder) {
+        // Consumer owns its event loop — ideal for subscription-based APIs.
+        while recorder.is_running() {
+            let item = self.queue.lock().await.pop_front();
+            match item {
+                Some(ts) => {
+                    recorder.record(now_unix_ns_estimate().saturating_sub(ts)).await;
+                }
+                None => tokio::task::yield_now().await,
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    let queue = Arc::new(Mutex::new(VecDeque::new()));
-    let q1 = queue.clone();
-    let q2 = queue.clone();
+    let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
 
     let results = ProducerConsumerBenchmark::new()
         .producers(4)
         .consumers(4)
         .rate(10_000.0)         // Total produce rate (shared across producers)
         .duration_secs(10)
-        .produce(move || {
-            let q = q1.clone();
-            Box::pin(async move {
-                q.lock().await.push_back(now_unix_ns_estimate());
-                Ok(())
-            })
-        })
-        .consume(move || {
-            let q = q2.clone();
-            Box::pin(async move {
-                q.lock().await.pop_front()
-                    .map(|ts| now_unix_ns_estimate().saturating_sub(ts))
-            })
-        })
+        .producer(QueueProducer { queue: queue.clone() })
+        .consumer(QueueConsumer { queue: queue.clone() })
         .run()
         .await;
 
@@ -124,9 +147,9 @@ async fn main() {
 }
 ```
 
-**Closure contracts:**
-- **produce**: returns `Ok(())` on success or `Err(reason)` on failure
-- **consume**: returns `Some(latency_ns)` when an item was consumed, `None` when queue is empty (worker yields briefly)
+**Trait contracts:**
+- **ProducerWork::produce**: returns `Ok(())` on success or `Err(reason)` on failure. Rate-controlled by the framework.
+- **ConsumerWork::run**: consumer owns its event loop. Use `recorder.record(latency_ns)` to report each consumed item and `recorder.is_running()` to check when to stop.
 
 ### Async Task Pattern (Submit + Poll)
 
@@ -239,8 +262,8 @@ println!("p99: {:.3}ms", results.p99_latency_ms());
 ```
 
 **`ProducerConsumerBenchmark`**:
-- `.produce(fn)` — rate-controlled, returns `Ok(())` or `Err(reason)`
-- `.consume(fn)` — free-running, returns `Some(latency_ns)` or `None` (empty)
+- `.producer(impl ProducerWork)` — rate-controlled, `produce()` returns `Ok(())` or `Err(reason)`
+- `.consumer(impl ConsumerWork)` — consumer owns its event loop via `run(state, recorder)`, reports items with `recorder.record(latency_ns)`
 
 **`AsyncTaskBenchmark`**:
 - `.submit(fn)` — rate-controlled, returns `Some(task_id: u64)` or `None`

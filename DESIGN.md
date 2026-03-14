@@ -76,8 +76,8 @@ Three high-level benchmark patterns, each a builder that accepts user-supplied c
 - Returns `BenchmarkResults` with `print_summary()`, `throughput()`, `p99_latency_ms()`, etc.
 
 **ProducerConsumerBenchmark** (`patterns/producer_consumer.rs`) — queue/pipeline pattern
-- Producers: rate-controlled closures returning `Ok(())` on success or `Err(reason)` on error
-- Consumers: free-running closures returning `Some(latency_ns)` when an item was consumed or `None` when the queue is empty (worker yields briefly)
+- Producers: rate-controlled via `ProducerWork::produce()` returning `Ok(())` or `Err(reason)`
+- Consumers: own their event loop via `ConsumerWork::run(state, recorder)` — suited for subscription-based APIs where messages are pushed to the consumer. The consumer reports each item with `recorder.record(latency_ns)` and exits when `recorder.is_running()` returns `false`.
 - Returns `ProducerConsumerResults`
 
 **AsyncTaskBenchmark** (`patterns/async_task.rs`) — submit-and-poll pattern

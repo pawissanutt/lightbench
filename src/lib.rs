@@ -70,8 +70,9 @@ pub use patterns::async_task::AsyncTaskBenchmark;
 pub use patterns::producer_consumer::ProducerConsumerBenchmark;
 pub use patterns::request::Benchmark;
 pub use patterns::work::{
-    AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerWork, PollResult,
-    PollWork, ProducerConsumerResults, ProducerWork, SubmitWork, WorkResult,
+    AsyncTaskResults, BenchmarkResults, BenchmarkSummary, BenchmarkWork, ConsumerRecorder,
+    ConsumerWork, PollResult, PollWork, ProducerConsumerResults, ProducerWork, SubmitWork,
+    WorkResult,
 };
 pub use rate::{DynamicRateController, RateController, SharedRateController};
 pub use time_sync::{latency_ns, now_unix_ns_estimate};

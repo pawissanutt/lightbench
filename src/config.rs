@@ -94,6 +94,14 @@ pub struct BenchmarkConfig {
     /// Hide progress output during the ramp-up phase.
     #[cfg_attr(feature = "clap", arg(long = "hide-ramp-progress"))]
     pub hide_ramp_progress: bool,
+
+    /// Drain timeout in seconds: wait for in-flight items after the
+    /// benchmark duration ends.  Set to `0` to disable draining.
+    ///
+    /// Applies to patterns with separate producer/consumer roles
+    /// (e.g. `AsyncTaskBenchmark`, `ProducerConsumerBenchmark`).
+    #[cfg_attr(feature = "clap", arg(long = "drain-timeout", default_value = "30"))]
+    pub drain_timeout: u64,
 }
 
 impl Default for BenchmarkConfig {
@@ -109,6 +117,7 @@ impl Default for BenchmarkConfig {
             csv: None,
             no_progress: false,
             hide_ramp_progress: false,
+            drain_timeout: 30,
         }
     }
 }

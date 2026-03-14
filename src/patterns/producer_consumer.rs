@@ -1,6 +1,10 @@
 //! Producer/Consumer benchmark pattern.
 //!
-//! Rate-controlled producers write items; free-running consumers read them.
+//! Rate-controlled producers write items; consumers own their event loop
+//! and report consumed items back to the framework via a [`ConsumerRecorder`](crate::ConsumerRecorder).
+//! This design suits subscription-based APIs where messages are pushed to the
+//! consumer (e.g. message brokers, event streams).
+//!
 //! Supply a [`ProducerWork`] and a [`ConsumerWork`] implementation; the
 //! framework handles rate control, stats, progress, and CSV export.
 //!
@@ -8,7 +12,7 @@
 //!
 //! ```ignore
 //! use lightbench::{
-//!     ProducerConsumerBenchmark, ProducerWork, ConsumerWork, now_unix_ns_estimate,
+//!     ProducerConsumerBenchmark, ProducerWork, ConsumerWork, ConsumerRecorder, now_unix_ns_estimate,
 //! };
 //! use std::collections::VecDeque;
 //! use std::sync::Arc;
@@ -34,9 +38,16 @@
 //! impl ConsumerWork for QueueConsumer {
 //!     type State = ();
 //!     async fn init(&self) -> () {}
-//!     async fn consume(&self, _: &mut ()) -> Option<u64> {
-//!         self.queue.lock().await.pop_front()
-//!             .map(|ts| now_unix_ns_estimate().saturating_sub(ts))
+//!     async fn run(&self, _state: (), recorder: ConsumerRecorder) {
+//!         while recorder.is_running() {
+//!             let item = self.queue.lock().await.pop_front();
+//!             match item {
+//!                 Some(ts) => {
+//!                     recorder.record(now_unix_ns_estimate().saturating_sub(ts)).await;
+//!                 }
+//!                 None => tokio::task::yield_now().await,
+//!             }
+//!         }
 //!     }
 //! }
 //!
@@ -71,8 +82,8 @@ type ProgressFn = DualProgressFn;
 
 /// Builder for producer/consumer benchmarks.
 ///
-/// Producers are rate-controlled; consumers run as fast as possible
-/// (returning `None` from [`ConsumerWork::consume`] yields the worker briefly).
+/// Producers are rate-controlled; consumers own their event loop and report
+/// stats via a [`ConsumerRecorder`](crate::ConsumerRecorder) callback.
 ///
 /// Set both a [`ProducerWork`] and a [`ConsumerWork`] via [`.producer()`] and
 /// [`.consumer()`] before calling [`.run()`].
@@ -85,6 +96,7 @@ pub struct ProducerConsumerBenchmark<PR = (), CO = ()> {
     burst_factor: f64,
     show_ramp_progress: bool,
     duration: Duration,
+    drain_timeout: Option<Duration>,
     csv_path: Option<PathBuf>,
     show_progress: bool,
     progress_fn: ProgressFn,
@@ -112,6 +124,7 @@ impl ProducerConsumerBenchmark<(), ()> {
             burst_factor: 0.1,
             show_ramp_progress: true,
             duration: Duration::from_secs(10),
+            drain_timeout: Some(Duration::from_secs(30)),
             csv_path: None,
             show_progress: true,
             progress_fn: Arc::new(|p, c| {
@@ -185,6 +198,21 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
         self
     }
 
+    /// Wait for all in-flight items to drain after the benchmark duration ends.
+    ///
+    /// Set the maximum time to wait for consumers to finish processing.
+    /// Pass `None` to disable draining (default: 30s).
+    pub fn drain_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.drain_timeout = timeout;
+        self
+    }
+
+    /// Wait for all in-flight items to drain with the given timeout in seconds.
+    pub fn drain_timeout_secs(mut self, secs: u64) -> Self {
+        self.drain_timeout = Some(Duration::from_secs(secs));
+        self
+    }
+
     /// Set CSV output file path.
     pub fn csv<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.csv_path = Some(path.into());
@@ -219,6 +247,7 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
             burst_factor: self.burst_factor,
             show_ramp_progress: self.show_ramp_progress,
             duration: self.duration,
+            drain_timeout: self.drain_timeout,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
             progress_fn: self.progress_fn,
@@ -238,6 +267,7 @@ impl<PR, CO> ProducerConsumerBenchmark<PR, CO> {
             burst_factor: self.burst_factor,
             show_ramp_progress: self.show_ramp_progress,
             duration: self.duration,
+            drain_timeout: self.drain_timeout,
             csv_path: self.csv_path,
             show_progress: self.show_progress,
             progress_fn: self.progress_fn,
@@ -257,6 +287,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let consumer_stats = Arc::new(Stats::new());
         let errors = ErrorCounter::new();
         let running = Arc::new(AtomicBool::new(true));
+        let producing = Arc::new(AtomicBool::new(true));
         let in_ramp = Arc::new(AtomicBool::new(self.ramp_up.is_some()));
 
         tracing::info!(
@@ -270,25 +301,26 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let show_progress = self.show_progress;
         let csv_path = self.csv_path.clone();
         let progress_fn = self.progress_fn;
-        let mut handles = Vec::new();
+        let mut producer_handles = Vec::new();
+        let mut consumer_handles = Vec::new();
 
         // ---- Producers --------------------------------------------------
         let start_rate = if self.ramp_up.is_some() { self.ramp_start_rate } else { self.rate };
         let rate_ctrl = DynamicRateController::with_burst(start_rate, self.burst_factor);
 
         for _ in 0..self.producers {
-            handles.push(spawn_producer(
+            producer_handles.push(spawn_producer(
                 producer.clone(),
                 rate_ctrl.clone(),
                 producer_stats.clone(),
                 errors.clone(),
-                running.clone(),
+                producing.clone(),
             ));
         }
 
         // ---- Consumers --------------------------------------------------
         for _ in 0..self.consumers {
-            handles.push(spawn_consumer(
+            consumer_handles.push(spawn_consumer(
                 consumer.clone(),
                 consumer_stats.clone(),
                 running.clone(),
@@ -334,9 +366,36 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
 
         // ---- Wait and collect -------------------------------------------
         tokio::time::sleep(self.duration).await;
+        producing.store(false, Ordering::SeqCst);
+
+        for handle in producer_handles {
+            let _ = handle.await;
+        }
+
+        // ---- Drain in-flight items --------------------------------------
+        if let Some(drain_dur) = self.drain_timeout {
+            let produced = producer_stats.snapshot().await.sent_count;
+            if produced > consumer_stats.snapshot().await.received_count {
+                tracing::info!("Benchmark duration complete, draining in-flight items (timeout: {}s)", drain_dur.as_secs());
+                let deadline = tokio::time::Instant::now() + drain_dur;
+                loop {
+                    let consumed = consumer_stats.snapshot().await.received_count;
+                    if consumed >= produced {
+                        tracing::info!("All in-flight items drained");
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        tracing::warn!("{} items still in-flight after drain timeout", produced.saturating_sub(consumed));
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+
         running.store(false, Ordering::SeqCst);
 
-        for handle in handles {
+        for handle in consumer_handles {
             let _ = handle.await;
         }
         if let Some(h) = snapshot_handle { let _ = h.await; }
@@ -391,17 +450,8 @@ fn spawn_consumer<CO: ConsumerWork>(
     running: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut state = consumer.init().await;
-        while running.load(Ordering::Relaxed) {
-            match consumer.consume(&mut state).await {
-                Some(latency_ns) => {
-                    stats.record_received(latency_ns).await;
-                }
-                None => {
-                    tokio::task::yield_now().await;
-                }
-            }
-        }
-        consumer.cleanup(state).await;
+        let state = consumer.init().await;
+        let recorder = crate::patterns::work::ConsumerRecorder::new(stats, running);
+        consumer.run(state, recorder).await;
     })
 }
