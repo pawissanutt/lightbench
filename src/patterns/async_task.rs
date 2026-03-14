@@ -47,16 +47,16 @@
 //! results.print_summary();
 //! ```
 
-use crate::metrics::errors::ErrorCounter;
+use crate::Stats;
 use crate::metrics::StatsSnapshot;
+use crate::metrics::errors::ErrorCounter;
 use crate::patterns::request::ramp_drive;
 use crate::patterns::work::{AsyncTaskResults, BenchmarkSummary, PollResult, PollWork, SubmitWork};
-use crate::patterns::{spawn_dual_snapshot_task, DualProgressFn, DualSnapshotConfig};
+use crate::patterns::{DualProgressFn, DualSnapshotConfig, spawn_dual_snapshot_task};
 use crate::rate::DynamicRateController;
-use crate::Stats;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
@@ -284,7 +284,11 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         let mut poll_handles = Vec::new();
 
         // ---- Submit workers -----------------------------------------------
-        let start_rate = if self.ramp_up.is_some() { self.ramp_start_rate } else { self.rate };
+        let start_rate = if self.ramp_up.is_some() {
+            self.ramp_start_rate
+        } else {
+            self.rate
+        };
         let rate_ctrl = DynamicRateController::with_burst(start_rate, self.burst_factor);
 
         for _ in 0..self.submit_workers {
@@ -310,33 +314,37 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         }
 
         // ---- Snapshot task (runs from the start, including during ramp) ---
-        let snapshot_handle = if show_progress || csv_path.is_some() { Some(spawn_dual_snapshot_task(
-            submit_stats.clone(),
-            complete_stats.clone(),
-            running.clone(),
-            DualSnapshotConfig {
-                in_ramp: in_ramp.clone(),
-                show_ramp_progress: self.show_ramp_progress,
-                csv_path,
-                show_progress,
-                progress_fn,
-                csv_header: "timestamp,submitted,completed,in_flight,throughput,p50_ms,p95_ms,p99_ms",
-                csv_row_fn: |s, c| {
-                    let in_flight = s.sent_count.saturating_sub(c.received_count);
-                    format!(
-                        "{},{},{},{},{:.2},{:.3},{:.3},{:.3}",
-                        s.timestamp,
-                        s.sent_count,
-                        c.received_count,
-                        in_flight,
-                        c.interval_throughput(),
-                        c.latency_ns_p50 as f64 / 1_000_000.0,
-                        c.latency_ns_p95 as f64 / 1_000_000.0,
-                        c.latency_ns_p99 as f64 / 1_000_000.0,
-                    )
+        let snapshot_handle = if show_progress || csv_path.is_some() {
+            Some(spawn_dual_snapshot_task(
+                submit_stats.clone(),
+                complete_stats.clone(),
+                running.clone(),
+                DualSnapshotConfig {
+                    in_ramp: in_ramp.clone(),
+                    show_ramp_progress: self.show_ramp_progress,
+                    csv_path,
+                    show_progress,
+                    progress_fn,
+                    csv_header: "timestamp,submitted,completed,in_flight,throughput,p50_ms,p95_ms,p99_ms",
+                    csv_row_fn: |s, c| {
+                        let in_flight = s.sent_count.saturating_sub(c.received_count);
+                        format!(
+                            "{},{},{},{},{:.2},{:.3},{:.3},{:.3}",
+                            s.timestamp,
+                            s.sent_count,
+                            c.received_count,
+                            in_flight,
+                            c.interval_throughput(),
+                            c.latency_ns_p50 as f64 / 1_000_000.0,
+                            c.latency_ns_p95 as f64 / 1_000_000.0,
+                            c.latency_ns_p99 as f64 / 1_000_000.0,
+                        )
+                    },
                 },
-            },
-        )) } else { None };
+            ))
+        } else {
+            None
+        };
 
         // ---- Ramp-up ----------------------------------------------------
         if let Some(ramp_dur) = self.ramp_up {
@@ -355,7 +363,10 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
 
         // ---- Drain pending tasks -------------------------------------------
         if let Some(drain_dur) = self.drain_timeout {
-            tracing::info!("Benchmark duration complete, draining pending tasks (timeout: {}s)", drain_dur.as_secs());
+            tracing::info!(
+                "Benchmark duration complete, draining pending tasks (timeout: {}s)",
+                drain_dur.as_secs()
+            );
             let deadline = tokio::time::Instant::now() + drain_dur;
             loop {
                 let remaining = pending.read().await.len();
@@ -376,7 +387,9 @@ impl<S: SubmitWork, P: PollWork> AsyncTaskBenchmark<S, P> {
         for handle in poll_handles {
             let _ = handle.await;
         }
-        if let Some(h) = snapshot_handle { let _ = h.await; }
+        if let Some(h) = snapshot_handle {
+            let _ = h.await;
+        }
 
         let ss = submit_stats.snapshot().await;
         let cs = complete_stats.snapshot().await;

@@ -84,11 +84,12 @@ impl SequenceTracker {
     /// lost before the first received message or after the last.
     #[inline]
     pub fn gap_count(&self) -> u64 {
-        if let Some(min) = self.min_seq && self.max_seq >= min {
-                let expected = self.max_seq - min + 1;
-                let actual = self.seen.len() as u64;
-                return expected.saturating_sub(actual);
-            
+        if let Some(min) = self.min_seq
+            && self.max_seq >= min
+        {
+            let expected = self.max_seq - min + 1;
+            let actual = self.seen.len() as u64;
+            return expected.saturating_sub(actual);
         }
         0
     }

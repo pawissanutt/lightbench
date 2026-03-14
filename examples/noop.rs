@@ -11,7 +11,7 @@
 //! ```
 
 use clap::Parser;
-use lightbench::{logging, Benchmark, BenchmarkConfig, BenchmarkWork, WorkResult};
+use lightbench::{Benchmark, BenchmarkConfig, BenchmarkWork, WorkResult, logging};
 
 #[derive(Clone)]
 struct Noop;

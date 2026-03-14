@@ -64,18 +64,18 @@
 //! results.print_summary();
 //! ```
 
-use crate::metrics::errors::ErrorCounter;
+use crate::Stats;
 use crate::metrics::StatsSnapshot;
+use crate::metrics::errors::ErrorCounter;
 use crate::patterns::request::ramp_drive;
 use crate::patterns::work::{
     BenchmarkSummary, ConsumerWork, ProducerConsumerResults, ProducerWork,
 };
-use crate::patterns::{spawn_dual_snapshot_task, DualProgressFn, DualSnapshotConfig};
+use crate::patterns::{DualProgressFn, DualSnapshotConfig, spawn_dual_snapshot_task};
 use crate::rate::DynamicRateController;
-use crate::Stats;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 type ProgressFn = DualProgressFn;
@@ -305,7 +305,11 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let mut consumer_handles = Vec::new();
 
         // ---- Producers --------------------------------------------------
-        let start_rate = if self.ramp_up.is_some() { self.ramp_start_rate } else { self.rate };
+        let start_rate = if self.ramp_up.is_some() {
+            self.ramp_start_rate
+        } else {
+            self.rate
+        };
         let rate_ctrl = DynamicRateController::with_burst(start_rate, self.burst_factor);
 
         for _ in 0..self.producers {
@@ -328,34 +332,38 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         }
 
         // ---- Snapshot task (runs from the start, including during ramp) -
-        let snapshot_handle = if show_progress || csv_path.is_some() { Some(spawn_dual_snapshot_task(
-            producer_stats.clone(),
-            consumer_stats.clone(),
-            running.clone(),
-            DualSnapshotConfig {
-                in_ramp: in_ramp.clone(),
-                show_ramp_progress: self.show_ramp_progress,
-                csv_path,
-                show_progress,
-                progress_fn,
-                csv_header: "timestamp,produced,consumed,in_flight,produce_rate,consume_rate,p50_ms,p95_ms,p99_ms",
-                csv_row_fn: |p, c| {
-                    let in_flight = p.sent_count.saturating_sub(c.received_count);
-                    format!(
-                        "{},{},{},{},{:.2},{:.2},{:.3},{:.3},{:.3}",
-                        p.timestamp,
-                        p.sent_count,
-                        c.received_count,
-                        in_flight,
-                        p.interval_throughput(),
-                        c.interval_throughput(),
-                        c.latency_ns_p50 as f64 / 1_000_000.0,
-                        c.latency_ns_p95 as f64 / 1_000_000.0,
-                        c.latency_ns_p99 as f64 / 1_000_000.0,
-                    )
+        let snapshot_handle = if show_progress || csv_path.is_some() {
+            Some(spawn_dual_snapshot_task(
+                producer_stats.clone(),
+                consumer_stats.clone(),
+                running.clone(),
+                DualSnapshotConfig {
+                    in_ramp: in_ramp.clone(),
+                    show_ramp_progress: self.show_ramp_progress,
+                    csv_path,
+                    show_progress,
+                    progress_fn,
+                    csv_header: "timestamp,produced,consumed,in_flight,produce_rate,consume_rate,p50_ms,p95_ms,p99_ms",
+                    csv_row_fn: |p, c| {
+                        let in_flight = p.sent_count.saturating_sub(c.received_count);
+                        format!(
+                            "{},{},{},{},{:.2},{:.2},{:.3},{:.3},{:.3}",
+                            p.timestamp,
+                            p.sent_count,
+                            c.received_count,
+                            in_flight,
+                            p.interval_throughput(),
+                            c.interval_throughput(),
+                            c.latency_ns_p50 as f64 / 1_000_000.0,
+                            c.latency_ns_p95 as f64 / 1_000_000.0,
+                            c.latency_ns_p99 as f64 / 1_000_000.0,
+                        )
+                    },
                 },
-            },
-        )) } else { None };
+            ))
+        } else {
+            None
+        };
 
         // ---- Ramp-up ----------------------------------------------------
         if let Some(ramp_dur) = self.ramp_up {
@@ -376,7 +384,10 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         if let Some(drain_dur) = self.drain_timeout {
             let produced = producer_stats.snapshot().await.sent_count;
             if produced > consumer_stats.snapshot().await.received_count {
-                tracing::info!("Benchmark duration complete, draining in-flight items (timeout: {}s)", drain_dur.as_secs());
+                tracing::info!(
+                    "Benchmark duration complete, draining in-flight items (timeout: {}s)",
+                    drain_dur.as_secs()
+                );
                 let deadline = tokio::time::Instant::now() + drain_dur;
                 loop {
                     let consumed = consumer_stats.snapshot().await.received_count;
@@ -385,7 +396,10 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
                         break;
                     }
                     if tokio::time::Instant::now() >= deadline {
-                        tracing::warn!("{} items still in-flight after drain timeout", produced.saturating_sub(consumed));
+                        tracing::warn!(
+                            "{} items still in-flight after drain timeout",
+                            produced.saturating_sub(consumed)
+                        );
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -398,7 +412,9 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         for handle in consumer_handles {
             let _ = handle.await;
         }
-        if let Some(h) = snapshot_handle { let _ = h.await; }
+        if let Some(h) = snapshot_handle {
+            let _ = h.await;
+        }
 
         let ps = producer_stats.snapshot().await;
         let cs = consumer_stats.snapshot().await;

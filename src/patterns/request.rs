@@ -2,15 +2,15 @@
 //!
 //! High-level runner with worker management, rate control, and metrics.
 
-use crate::metrics::errors::ErrorCounter;
+use crate::Stats;
 use crate::metrics::StatsSnapshot;
+use crate::metrics::errors::ErrorCounter;
 use crate::patterns::work::{BenchmarkResults, BenchmarkSummary, BenchmarkWork, WorkResult};
 use crate::rate::DynamicRateController;
-use crate::Stats;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 type ProgressFn = Arc<dyn Fn(&StatsSnapshot) -> Option<String> + Send + Sync + 'static>;
@@ -338,7 +338,7 @@ impl<W: BenchmarkWork> Benchmark<W> {
 
         let snapshot_handle = if self.show_progress {
             // Snapshot task runs from the start (including ramp)
-            Some( spawn_snapshot_task(
+            Some(spawn_snapshot_task(
                 stats.clone(),
                 running.clone(),
                 in_ramp.clone(),
@@ -355,7 +355,13 @@ impl<W: BenchmarkWork> Benchmark<W> {
         if let Some(ramp_dur) = self.ramp_up {
             match self.rate_mode {
                 RateMode::Total(target) => {
-                    ramp_drive(rate_ctrls[0].clone(), self.ramp_start_rate, target, ramp_dur).await;
+                    ramp_drive(
+                        rate_ctrls[0].clone(),
+                        self.ramp_start_rate,
+                        target,
+                        ramp_dur,
+                    )
+                    .await;
                 }
                 RateMode::PerWorker(_) => {
                     ramp_drive_many(rate_ctrls, ramp_target.0, ramp_target.1, ramp_dur).await;
@@ -373,7 +379,7 @@ impl<W: BenchmarkWork> Benchmark<W> {
         for h in handles {
             let _ = h.await;
         }
-        if let Some(s) = snapshot_handle{
+        if let Some(s) = snapshot_handle {
             let _ = s.await;
         }
 

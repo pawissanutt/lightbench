@@ -15,8 +15,8 @@
 
 use clap::Parser;
 use lightbench::{
-    logging, now_unix_ns_estimate, BenchmarkConfig, ConsumerRecorder, ConsumerWork,
-    ProducerConsumerBenchmark, ProducerWork,
+    BenchmarkConfig, ConsumerRecorder, ConsumerWork, ProducerConsumerBenchmark, ProducerWork,
+    logging, now_unix_ns_estimate,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;

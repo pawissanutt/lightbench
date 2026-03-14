@@ -6,12 +6,12 @@
 //!
 //! Worker lifecycle traits live in [`work`].
 
-use crate::metrics::StatsSnapshot;
 use crate::Stats;
+use crate::metrics::StatsSnapshot;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub mod async_task;

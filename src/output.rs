@@ -43,7 +43,9 @@ impl OutputWriter {
     /// Creates parent directories if needed and writes the CSV header.
     pub async fn new_csv(path: String) -> Result<Self, FrameworkError> {
         // Ensure parent directory exists
-        if let Some(parent) = std::path::Path::new(&path).parent() && !parent.as_os_str().is_empty() {
+        if let Some(parent) = std::path::Path::new(&path).parent()
+            && !parent.as_os_str().is_empty()
+        {
             fs::create_dir_all(parent).await.ok();
         }
         let file = File::create(&path).await?;

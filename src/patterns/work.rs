@@ -12,8 +12,8 @@
 //!
 //! [`init`]: BenchmarkWork::init
 
-use crate::metrics::errors::ErrorCounter;
 use crate::metrics::StatsSnapshot;
+use crate::metrics::errors::ErrorCounter;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
@@ -356,9 +356,7 @@ impl BenchmarkSummary {
     }
 
     /// Build a summary from a receive-only snapshot (consumers, completions).
-    pub(crate) fn from_snapshot_recv_only(
-        snap: &StatsSnapshot,
-    ) -> Self {
+    pub(crate) fn from_snapshot_recv_only(snap: &StatsSnapshot) -> Self {
         let ns = |v: u64| v as f64 / 1_000_000.0;
         Self {
             total_ops: snap.received_count,

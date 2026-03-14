@@ -8,10 +8,10 @@
 //! - [`SharedRateController`]: Shared across workers (global rate limit)
 
 use crate::time_sync::now_unix_ns_estimate;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::time::{interval, Interval, MissedTickBehavior};
+use tokio::time::{Interval, MissedTickBehavior, interval};
 
 /// Rate controller for open-loop message sending.
 ///
@@ -344,8 +344,7 @@ impl DynInner {
         let factor = factor.clamp(0.001, 1000.0);
         let rate = self.rate();
         let max_tokens = Self::calc_max_tokens(rate, factor);
-        self.burst_factor
-            .store(factor.to_bits(), Ordering::Relaxed);
+        self.burst_factor.store(factor.to_bits(), Ordering::Relaxed);
         self.max_tokens.store(max_tokens, Ordering::Relaxed);
     }
 
@@ -357,17 +356,13 @@ impl DynInner {
         if elapsed_ns == 0 {
             return;
         }
-        let new_tokens =
-            (elapsed_ns as f64 * self.tokens_per_ns() * TOKEN_SCALE as f64) as u64;
+        let new_tokens = (elapsed_ns as f64 * self.tokens_per_ns() * TOKEN_SCALE as f64) as u64;
         if new_tokens == 0 {
             return;
         }
-        let _ = self.last_refill_ns.compare_exchange(
-            last,
-            now,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        let _ =
+            self.last_refill_ns
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed);
         let max = self.max_tokens.load(Ordering::Relaxed);
         let _ = self
             .tokens

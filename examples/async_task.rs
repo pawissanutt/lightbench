@@ -14,21 +14,21 @@
 
 use clap::Parser;
 use lightbench::{
-    logging, now_unix_ns_estimate, AsyncTaskBenchmark, BenchmarkConfig, PollResult, PollWork,
-    SubmitWork,
+    AsyncTaskBenchmark, BenchmarkConfig, PollResult, PollWork, SubmitWork, logging,
+    now_unix_ns_estimate,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 

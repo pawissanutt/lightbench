@@ -9,11 +9,13 @@
 //! ```
 
 use clap::Parser;
-use lightbench::{logging, now_unix_ns_estimate, Benchmark, BenchmarkConfig, BenchmarkWork, WorkResult};
+use lightbench::{
+    Benchmark, BenchmarkConfig, BenchmarkWork, WorkResult, logging, now_unix_ns_estimate,
+};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::{response::IntoResponse, routing::get, Router};
+use axum::{Router, response::IntoResponse, routing::get};
 
 // ============================================================================
 // Server (minimal echo server with timestamp)
