@@ -30,9 +30,100 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lightbench = "0.1"
+lightbench = "0.3"
 tokio = { version = "1", features = ["full"] }
 ```
+
+To enable CLI argument parsing via [`clap`](https://docs.rs/clap), add the `clap` feature:
+
+```toml
+[dependencies]
+lightbench = { version = "0.3", features = ["clap"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+```
+
+## Feature Flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `clap`  | off     | Derives `clap::Parser` on `BenchmarkConfig`, enabling direct CLI parsing with `BenchmarkConfig::parse()`. |
+
+### `clap` Feature
+
+When the `clap` feature is enabled, `BenchmarkConfig` derives `clap::Parser` and exposes all benchmark options (`--rate`, `--workers`, `--duration`, etc.) as CLI flags. You can either use it as a standalone parser or flatten it into a larger `clap` struct.
+
+**Standalone parser** — simplest case, all options come from the command line:
+
+```rust
+use clap::Parser;
+use lightbench::{Benchmark, BenchmarkConfig, BenchmarkWork, WorkResult};
+
+#[derive(Clone)]
+struct Noop;
+
+impl BenchmarkWork for Noop {
+    type State = ();
+    async fn init(&self) -> () {}
+    async fn work(&self, _: &mut ()) -> WorkResult { WorkResult::success(0) }
+}
+
+#[tokio::main]
+async fn main() {
+    let config = BenchmarkConfig::parse(); // reads --rate, --workers, --duration, etc.
+    let results = Benchmark::from_config(config).work(Noop).run().await;
+    results.print_summary();
+}
+```
+
+Run it:
+
+```bash
+cargo run --release --features clap -- --rate 10000 --workers 4 --duration 10
+```
+
+**Embedded with `#[command(flatten)]`** — add your own flags alongside the benchmark options:
+
+```rust
+use clap::Parser;
+use lightbench::{Benchmark, BenchmarkConfig, BenchmarkWork, WorkResult};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(flatten)]
+    bench: BenchmarkConfig,
+
+    /// URL to benchmark
+    #[arg(long, default_value = "http://localhost:8080/")]
+    url: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let results = Benchmark::from_config(cli.bench)
+        .work(MyWork { url: cli.url })
+        .run()
+        .await;
+    results.print_summary();
+}
+```
+
+**Available CLI flags** (all optional, with defaults):
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--rate` | `-r` | unlimited | Total req/s shared across workers (`<=0` = unlimited) |
+| `--rate-per-worker` | `-R` | — | Req/s per worker (ignored when `--rate` is set) |
+| `--workers` | `-w` | `1` | Number of worker tasks |
+| `--duration` | `-d` | `5` | Test duration in seconds |
+| `--ramp-up` | `-u` | — | Ramp-up duration in seconds before the measured phase |
+| `--ramp-start` | — | `0` | Initial rate at the start of ramp-up |
+| `--burst-factor` | — | `0.1` | Burst allowance in seconds-worth of tokens |
+| `--csv` | — | — | Write snapshots to a CSV file at this path |
+| `--no-progress` | — | off | Disable live progress; write raw CSV rows to stdout |
+| `--hide-ramp-progress` | — | off | Hide progress output during ramp-up |
+| `--drain-timeout` | — | `30` | Seconds to wait for in-flight items after duration |
 
 ### Request Pattern (Request/Response)
 

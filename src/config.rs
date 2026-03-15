@@ -53,7 +53,7 @@ pub struct BenchmarkConfig {
     pub rate_per_worker: Option<f64>,
 
     /// Number of worker tasks (default: 4).
-    #[cfg_attr(feature = "clap", arg(short = 'w', long, default_value = "4"))]
+    #[cfg_attr(feature = "clap", arg(short = 'w', long, default_value = "1"))]
     pub workers: usize,
 
     /// Benchmark duration in seconds (default: 5).
