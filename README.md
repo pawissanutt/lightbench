@@ -206,7 +206,8 @@ struct QueueConsumer { queue: Queue }
 impl ConsumerWork for QueueConsumer {
     type State = ();
     async fn init(&self) -> () {}
-    async fn run(&self, _state: (), recorder: ConsumerRecorder) {
+    // run() returns Self::State; the framework passes it to cleanup().
+    async fn run(&self, _state: (), recorder: ConsumerRecorder) -> () {
         // Consumer owns its event loop — ideal for subscription-based APIs.
         while recorder.is_running() {
             let item = self.queue.lock().await.pop_front();
@@ -240,7 +241,28 @@ async fn main() {
 
 **Trait contracts:**
 - **ProducerWork::produce**: returns `Ok(())` on success or `Err(reason)` on failure. Rate-controlled by the framework.
-- **ConsumerWork::run**: consumer owns its event loop. Use `recorder.record(latency_ns)` to report each consumed item and `recorder.is_running()` to check when to stop.
+- **ConsumerWork::run**: consumer owns its event loop. Returns `Self::State` when done (passed to `cleanup`). Use `recorder.record(latency_ns)` to report each consumed item.
+  - `recorder.is_running()` — poll-style check, suitable for tight loops.
+  - `recorder.stopped().await` — async signal, use in `tokio::select!` to unblock a pending receive when the benchmark ends.
+- **ConsumerWork::cleanup** *(optional)*: called with the `State` returned by `run` — close subscriptions, connections, etc. Default: no-op.
+
+**Stopping a blocked consumer** — when the consumer is awaiting a message from a channel or subscription, `is_running()` will never be checked. Use `stopped()` instead:
+
+```rust
+async fn run(&self, state: MyState, recorder: ConsumerRecorder) -> MyState {
+    loop {
+        tokio::select! {
+            msg = state.subscription.recv() => {
+                if let Some(ts) = msg {
+                    recorder.record(now_unix_ns_estimate().saturating_sub(ts)).await;
+                }
+            }
+            _ = recorder.stopped() => break,
+        }
+    }
+    state
+}
+```
 
 ### Async Task Pattern (Submit + Poll)
 
@@ -354,7 +376,7 @@ println!("p99: {:.3}ms", results.p99_latency_ms());
 
 **`ProducerConsumerBenchmark`**:
 - `.producer(impl ProducerWork)` — rate-controlled, `produce()` returns `Ok(())` or `Err(reason)`
-- `.consumer(impl ConsumerWork)` — consumer owns its event loop via `run(state, recorder)`, reports items with `recorder.record(latency_ns)`
+- `.consumer(impl ConsumerWork)` — consumer owns its event loop via `run(state, recorder) -> State`, reports items with `recorder.record(latency_ns)`. Stop via `recorder.is_running()` (polling) or `recorder.stopped().await` (`tokio::select!`). Optional `cleanup(state)` hook runs after `run` returns.
 
 **`AsyncTaskBenchmark`**:
 - `.submit(fn)` — rate-controlled, returns `Some(task_id: u64)` or `None`

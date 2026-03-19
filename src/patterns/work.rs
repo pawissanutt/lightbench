@@ -172,19 +172,23 @@ pub trait ProducerWork: Clone + Send + Sync + 'static {
 ///
 /// The consumer owns its event loop and calls [`record`](Self::record) each
 /// time it successfully processes an item. Check [`is_running`](Self::is_running)
-/// to know when the framework wants the consumer to stop.
+/// to know when the benchmark wants the consumer to stop, or `await`
+/// [`stopped()`](Self::stopped) inside a `tokio::select!` branch to unblock
+/// any pending receive when the benchmark ends.
 #[derive(Clone)]
 pub struct ConsumerRecorder {
     stats: Arc<crate::Stats>,
     running: Arc<std::sync::atomic::AtomicBool>,
+    stop_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl ConsumerRecorder {
     pub(crate) fn new(
         stats: Arc<crate::Stats>,
         running: Arc<std::sync::atomic::AtomicBool>,
+        stop_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
-        Self { stats, running }
+        Self { stats, running, stop_rx }
     }
 
     /// Record a consumed item with its latency in nanoseconds.
@@ -198,6 +202,31 @@ impl ConsumerRecorder {
     pub fn is_running(&self) -> bool {
         self.running.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Resolves when the benchmark signals the consumer to stop.
+    ///
+    /// Use this inside a `tokio::select!` branch to unblock a pending receive
+    /// (e.g. a channel `.recv().await`) when the benchmark ends:
+    ///
+    /// ```ignore
+    /// loop {
+    ///     tokio::select! {
+    ///         msg = sub.recv() => {
+    ///             if let Some(msg) = msg {
+    ///                 recorder.record(latency).await;
+    ///             }
+    ///         }
+    ///         _ = recorder.stopped() => break,
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// This future is level-triggered: if the benchmark has already stopped
+    /// before `stopped()` is called, it resolves immediately.
+    pub async fn stopped(&self) {
+        let mut rx = self.stop_rx.clone();
+        let _ = rx.wait_for(|v| *v).await;
+    }
 }
 
 /// Worker lifecycle for the **consumer** side of a producer/consumer benchmark.
@@ -210,8 +239,12 @@ impl ConsumerRecorder {
 /// The framework spawns one task per consumer worker and hands it a
 /// [`ConsumerRecorder`] to report stats. The consumer should:
 /// 1. Subscribe / connect in [`run`](Self::run).
-/// 2. Loop while [`recorder.is_running()`](ConsumerRecorder::is_running).
+/// 2. Loop while [`recorder.is_running()`](ConsumerRecorder::is_running) returns `true`
+///    **or** use `tokio::select!` with [`recorder.stopped()`](ConsumerRecorder::stopped)
+///    to unblock any pending receive.
 /// 3. Call [`recorder.record(latency_ns)`](ConsumerRecorder::record) for each item.
+/// 4. Return `Self::State` from [`run`](Self::run) — the framework passes it to
+///    [`cleanup`](Self::cleanup) for teardown.
 pub trait ConsumerWork: Clone + Send + Sync + 'static {
     /// Per-worker state created by [`init`] and passed to [`run`].
     ///
@@ -228,12 +261,22 @@ pub trait ConsumerWork: Clone + Send + Sync + 'static {
     ///
     /// The consumer fully controls its own loop. Use `recorder` to report
     /// consumed items back to the framework. Exit when
-    /// [`recorder.is_running()`](ConsumerRecorder::is_running) returns `false`.
+    /// [`recorder.is_running()`](ConsumerRecorder::is_running) returns `false`
+    /// or when [`recorder.stopped()`](ConsumerRecorder::stopped) resolves.
+    ///
+    /// Return `state` when done; the framework will pass it to [`cleanup`](Self::cleanup).
     fn run(
         &self,
         state: Self::State,
         recorder: ConsumerRecorder,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Self::State> + Send;
+
+    /// Clean up per-worker state after the consumer loop exits.
+    ///
+    /// Default: drops the state.
+    fn cleanup(&self, _state: Self::State) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
 
 /// Worker lifecycle for the **submit** side of an async-task benchmark.

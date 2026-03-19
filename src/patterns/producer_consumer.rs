@@ -289,6 +289,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         let running = Arc::new(AtomicBool::new(true));
         let producing = Arc::new(AtomicBool::new(true));
         let in_ramp = Arc::new(AtomicBool::new(self.ramp_up.is_some()));
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
 
         tracing::info!(
             "ProducerConsumer: {} producers @ {:.0} msg/s, {} consumers, {}s",
@@ -328,6 +329,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
                 consumer.clone(),
                 consumer_stats.clone(),
                 running.clone(),
+                stop_rx.clone(),
             ));
         }
 
@@ -408,6 +410,7 @@ impl<PR: ProducerWork, CO: ConsumerWork> ProducerConsumerBenchmark<PR, CO> {
         }
 
         running.store(false, Ordering::SeqCst);
+        let _ = stop_tx.send(true);
 
         for handle in consumer_handles {
             let _ = handle.await;
@@ -464,10 +467,12 @@ fn spawn_consumer<CO: ConsumerWork>(
     consumer: CO,
     stats: Arc<Stats>,
     running: Arc<AtomicBool>,
+    stop_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let state = consumer.init().await;
-        let recorder = crate::patterns::work::ConsumerRecorder::new(stats, running);
-        consumer.run(state, recorder).await;
+        let recorder = crate::patterns::work::ConsumerRecorder::new(stats, running, stop_rx);
+        let state = consumer.run(state, recorder).await;
+        consumer.cleanup(state).await;
     })
 }

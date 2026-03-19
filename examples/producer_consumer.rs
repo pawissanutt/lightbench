@@ -70,7 +70,7 @@ struct QueueConsumer {
 impl ConsumerWork for QueueConsumer {
     type State = ();
     async fn init(&self) -> () {}
-    async fn run(&self, _state: (), recorder: ConsumerRecorder) {
+    async fn run(&self, _state: (), recorder: ConsumerRecorder) -> () {
         while recorder.is_running() {
             let item = self.queue.lock().await.pop_front();
             match item {
